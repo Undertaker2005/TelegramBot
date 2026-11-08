@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,8 @@ from telegram_bot.bot import register_handlers
 from telegram_bot.config import Settings
 from telegram_bot.content import validate_course
 from telegram_bot.database import Database
+from telegram_bot.open_dataset import OpenDataset
+from telegram_bot.reference_data import ReferenceLibrary
 
 
 class MemorySession(BaseSession):
@@ -120,9 +123,29 @@ async def test_user_completes_onboarding_and_reaches_first_exercise(tmp_path: Pa
         await click("course:english_general")
         course_user = await database.get_user(student.id)
         assert course_user["state"] == "placement", session.messages[-1].text
-        for index, option in enumerate((1, 0, 0, 0, 0)):
-            await click(f"p:{index}:{option}")
+        placement_course = await database.get_published_course("english_general")
+        previous_correct_position = None
+        for index, question in enumerate(placement_course["placement_test"]):
+            placement_state = json.loads(
+                (await database.get_user(student.id))["state_data_json"]
+            )
+            correct_position = placement_state["correct_position"]
+            assert correct_position != previous_correct_position
+            previous_correct_position = correct_position
+            shown_options = [
+                question["options"][option_index]
+                for option_index in placement_state["display_order"]
+            ]
+            button_labels = [
+                button.text
+                for row in session.messages[-1].reply_markup.inline_keyboard
+                for button in row
+            ]
+            assert button_labels == shown_options
+            incorrect_option = (question["correct_index"] + 1) % len(question["options"])
+            await click(f"p:{index}:{incorrect_option}")
         assert (await database.get_user(student.id))["state"] == "placement_result"
+        assert (await database.get_user(student.id))["level"] == "A1"
         await click("placement:accept")
         await click("pace:5")
         await click("plan:confirm")
@@ -143,13 +166,30 @@ async def test_user_completes_onboarding_and_reaches_first_exercise(tmp_path: Pa
         course = await database.get_published_course(user["course_id"])
         first_lesson = course["lessons"][0]
         first_exercise = first_lesson["exercises"][0]
+        exercise_state = json.loads(
+            (await database.get_user(student.id))["state_data_json"]
+        )
+        shown_options = [
+            first_exercise["options"][option_index]
+            for option_index in exercise_state["display_order"]
+        ]
+        assert [
+            button.text
+            for row in session.messages[-1].reply_markup.inline_keyboard
+            for button in row
+            if button.callback_data.startswith("ex:")
+        ] == shown_options
         wrong_index = next(
             index for index, option in enumerate(first_exercise["options"])
             if option != first_exercise["correct_answer"]
         )
         correct_index = first_exercise["options"].index(first_exercise["correct_answer"])
         await click(f"ex:0:{wrong_index}")
-        assert json.loads((await database.get_user(student.id))["state_data_json"])["attempts"] == 1
+        retry_state = json.loads(
+            (await database.get_user(student.id))["state_data_json"]
+        )
+        assert retry_state["attempts"] == 1
+        assert retry_state["display_order"] == exercise_state["display_order"]
         await click(f"ex:0:{correct_index}")
         assert session.messages[-1].text.startswith("Вправа 2/")
         await click("exskip:1")
@@ -209,6 +249,136 @@ async def test_user_completes_onboarding_and_reaches_first_exercise(tmp_path: Pa
         await send_text("/settings")
         await click("settings:retest")
         assert (await database.get_user(student.id))["state"] == "placement"
+    finally:
+        await bot.session.close()
+
+
+@pytest.mark.asyncio
+async def test_exam_withholds_answers_until_completion_and_persists_results(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "exam.sqlite3")
+    await database.initialize()
+    content_path = Path(__file__).resolve().parents[1] / "content" / "courses.json"
+    courses = [
+        validate_course(course)
+        for course in json.loads(content_path.read_text(encoding="utf-8"))
+    ]
+    await database.seed_courses(courses)
+    dataset_path = tmp_path / "open_training.sqlite3"
+    with sqlite3.connect(dataset_path) as connection:
+        connection.execute(
+            "CREATE TABLE dictionary_entries (entry_id TEXT, lemma TEXT, lemma_norm TEXT, "
+            "part_of_speech TEXT, pronunciation TEXT, definition TEXT, examples_json TEXT, "
+            "sense_id TEXT, synset_id TEXT, synonyms_json TEXT, cefr_level TEXT, "
+            "level_source TEXT, lexical_field TEXT, source_id TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO dictionary_entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "apple-a1", "apple", "apple", "noun", None, "A fruit.", "[]",
+                "apple-sense", "apple-synset", "[]", "A1", "CEFR-J exact match",
+                "Food", "oewn-2025",
+            ),
+        )
+        connection.execute(
+            "CREATE TABLE learning_tasks (task_id TEXT, task_type TEXT, instruction TEXT, "
+            "cefr_level TEXT, level_source TEXT, topic TEXT, lesson TEXT, prompt TEXT, "
+            "answer_mode TEXT, correct_answers_json TEXT, options_json TEXT, explanation TEXT, "
+            "source_id TEXT, source_record TEXT, license TEXT, attribution TEXT, "
+            "created_by TEXT, generation_method TEXT, part_of_speech TEXT)"
+        )
+        for task_id, prompt, answer in (
+            ("open-apple", "A fruit that grows on a tree.", "apple"),
+            ("open-book", "A set of printed pages.", "book"),
+        ):
+            connection.execute(
+                "INSERT INTO learning_tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    task_id, "definition_to_word", "Level A1", "A1", "CEFR-J",
+                    "Vocabulary", None, prompt, "text", json.dumps([answer]), "[]",
+                    "Open dataset explanation.", "oewn-2025", task_id, "CC BY 4.0",
+                    "Open English WordNet", "project", "test fixture", "noun",
+                ),
+            )
+    open_dataset = OpenDataset(dataset_path)
+
+    session = MemorySession()
+    token = "123456:" + "C" * 35
+    bot = Bot(token, session=session)
+    dispatcher = Dispatcher()
+    settings = Settings(
+        bot_token=token,
+        allowed_user_ids=frozenset(),
+        moderator_ids=frozenset(),
+        support_admin_ids=frozenset(),
+        database_path=tmp_path / "exam.sqlite3",
+        log_path=tmp_path / "bot.log",
+        inactive_profile_months=12,
+        technical_log_retention_days=30,
+        vocabulary_pass_threshold=0.7,
+        reminder_poll_seconds=30,
+    )
+    register_handlers(dispatcher, database, settings, open_dataset=open_dataset)
+    student = User(id=456, is_bot=False, first_name="Student")
+    chat = Chat(id=456, type="private")
+    update_id = 1
+
+    async def send_text(text: str) -> None:
+        nonlocal update_id
+        message = Message(
+            message_id=update_id,
+            date=datetime.now(UTC),
+            chat=chat,
+            from_user=student,
+            text=text,
+        )
+        await dispatcher.feed_update(bot, Update(update_id=update_id, message=message))
+        update_id += 1
+
+    try:
+        await database.create_user(student.id)
+        await database.update_user(
+            student.id,
+            privacy_accepted=1,
+            course_id="english_general",
+            level="A1",
+        )
+        await send_text("/vocab apple")
+        assert "apple · іменник · A1" in session.messages[-1].text
+        assert "Український переклад у джерелі відсутній." in session.messages[-1].text
+        await send_text("/saveword apple")
+        await send_text("/wordlist")
+        assert "apple (іменник)" in session.messages[-1].text
+        await send_text("/remove_word 1")
+        assert await database.user_wordbook(student.id) == []
+
+        await send_text("/exam 5")
+        state = json.loads((await database.get_user(student.id))["state_data_json"])
+        assert state["mode"] == "exam"
+        assert state["session_limit"] == 5
+        assert any(task["type"] == "placement_reading" for task in state["exam_tasks"])
+        assert {task["source_id"] for task in state["exam_tasks"]} == {
+            "bot-course",
+            "oewn-2025",
+        }
+
+        for index in range(5):
+            user = await database.get_user(student.id)
+            state = json.loads(user["state_data_json"])
+            task = state["current_task"]
+            answer = "not-a-valid-answer" if index == 0 else task["correct_answers"][0]
+            await send_text(answer)
+            if index < 4:
+                assert "Відповідь:" not in session.messages[-1].text
+                assert "Пояснення:" not in session.messages[-1].text
+
+        assert (await database.get_user(student.id))["state"] is None
+        assert "Розбір помилок:" in session.messages[-1].text
+        summary = await database.open_practice_summary(student.id)
+        assert summary["attempts"] == 5
+        assert summary["correct"] == 4
+        assert len(await database.recent_open_mistakes(student.id)) == 1
     finally:
         await bot.session.close()
 
@@ -287,5 +457,232 @@ async def test_private_allowlist_blocks_non_owner_from_creating_a_profile(tmp_pa
         await dispatcher.feed_update(bot, Update(update_id=1, message=message))
         assert await database.get_user(456) is None
         assert session.messages[-1].text == "Цей бот доступний лише власнику."
+    finally:
+        await bot.session.close()
+
+
+@pytest.mark.asyncio
+async def test_reference_commands_use_saved_level_and_reveal_practice_answer_after_attempt(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "reference.sqlite3")
+    await database.initialize()
+    await database.create_user(789)
+    await database.update_user(789, privacy_accepted=1, level="A1")
+    session = MemorySession()
+    token = "123456:" + "D" * 35
+    bot = Bot(token, session=session)
+    dispatcher = Dispatcher()
+    settings = Settings(
+        bot_token=token,
+        allowed_user_ids=frozenset(),
+        moderator_ids=frozenset(),
+        support_admin_ids=frozenset(),
+        database_path=tmp_path / "reference.sqlite3",
+        log_path=tmp_path / "bot.log",
+        inactive_profile_months=12,
+        technical_log_retention_days=30,
+        vocabulary_pass_threshold=0.7,
+        reminder_poll_seconds=30,
+    )
+    reference = ReferenceLibrary(
+        vocabulary={
+            "A1": [{
+                "word": "apple",
+                "part_of_speech": "noun",
+                "source": "CEFR-J",
+                "source_url": "source",
+                "license": "license",
+                "citation": "citation",
+            }],
+            "A2": [{
+                "word": "journey",
+                "part_of_speech": "noun",
+                "source": "CEFR-J",
+                "source_url": "source",
+                "license": "license",
+                "citation": "citation",
+            }],
+            "B1": [],
+            "B2": [],
+            "C1": [],
+            "C2": [{
+                "word": "abstruse",
+                "part_of_speech": "adjective",
+                "source": "CEFR-J",
+                "source_url": "source",
+                "license": "license",
+                "citation": "citation",
+            }],
+        },
+        grammar={
+            "A1": [{"item": "Present simple", "source_url": "source", "license": "license", "citation": "citation"}],
+            "A2": [{"item": "Past simple", "source_url": "source", "license": "license", "citation": "citation"}],
+            "B1": [],
+            "B2": [],
+            "C1": [],
+            "C2": [],
+        },
+        sentences={
+            "A1": [{
+                "text": "I have an apple.",
+                "license": "CC BY-NC-SA 4.0",
+                "source_url": "source",
+                "citation": "citation",
+            }],
+            "A2": [{
+                "text": "The journey was long.",
+                "license": "CC BY-NC-SA 4.0",
+                "source_url": "source",
+                "citation": "citation",
+            }],
+            "B1": [],
+            "B2": [],
+            "C1": [],
+            "C2": [{
+                "text": "The abstruse text perplexed her.",
+                "license": "CC BY-NC-SA 4.0",
+                "source_url": "source",
+                "citation": "citation",
+            }],
+        },
+        project_vocabulary={
+            "A1": {
+                "apple": {
+                    "translation": "яблуко",
+                    "example": "I have an apple.",
+                    "example_translation": "У мене є яблуко.",
+                }
+            },
+            "A2": {},
+            "B1": {},
+            "B2": {},
+            "C1": {},
+            "C2": {},
+        },
+        errors={},
+        sentences_enabled=True,
+    )
+    register_handlers(dispatcher, database, settings, reference)
+
+    async def send(text: str, message_id: int) -> str:
+        incoming = Message(
+            message_id=message_id,
+            date=datetime.now(UTC),
+            chat=Chat(id=789, type="private"),
+            from_user=User(id=789, is_bot=False, first_name="Student"),
+            text=text,
+        )
+        await dispatcher.feed_update(bot, Update(update_id=message_id, message=incoming))
+        return session.messages[-1].text
+
+    try:
+        word_response = await send("/word", 1)
+        assert "apple" in word_response
+        assert "journey" not in word_response and "abstruse" not in word_response
+        grammar_response = await send("/grammar", 2)
+        assert "Present simple" in grammar_response
+        assert "The journey was long." not in grammar_response
+
+        assert "перекладіть" in await send("/practice", 3)
+        practice_response = await send("яблуко", 4)
+        assert "Правильно!" in practice_response
+        assert "Відповідь: яблуко." in practice_response
+        assert (await database.get_user(789))["state"] is None
+
+        level_response = await send("/level C2", 5)
+        assert level_response.startswith("Рівень збережено: C2.")
+        assert "Майже вільне володіння" in level_response
+        assert (await database.get_user(789))["level"] == "C2"
+        c2_response = await send("/word", 6)
+        assert "abstruse" in c2_response
+        assert "I have an apple." not in c2_response
+        assert "Не знаю такої команди" in await send("/not_a_command", 7)
+    finally:
+        await bot.session.close()
+
+
+@pytest.mark.asyncio
+async def test_text_answer_exercise_accepts_retry_and_records_both_attempts(tmp_path: Path) -> None:
+    database = Database(tmp_path / "text-exercise.sqlite3")
+    await database.initialize()
+    content_path = Path(__file__).resolve().parents[1] / "content" / "courses.json"
+    courses = [
+        validate_course(course)
+        for course in json.loads(content_path.read_text(encoding="utf-8"))
+    ]
+    await database.seed_courses(courses)
+    course = next(course for course in courses if course["track"] == "general")
+    lesson = next(
+        lesson for lesson in course["lessons"] if lesson["id"] == "catalog-general-1-1"
+    )
+    exercise_index = next(
+        index for index, item in enumerate(lesson["exercises"])
+        if item.get("answer_mode") == "text"
+    )
+    exercise = lesson["exercises"][exercise_index]
+    await database.create_user(789)
+    await database.update_user(789, privacy_accepted=1, course_id=course["id"])
+    await database.set_state(
+        789,
+        "exercise",
+        {
+            "course_id": course["id"],
+            "lesson_id": lesson["id"],
+            "exercise_index": exercise_index,
+            "attempts": 0,
+        },
+    )
+
+    session = MemorySession()
+    token = "123456:" + "E" * 35
+    bot = Bot(token, session=session)
+    dispatcher = Dispatcher()
+    settings = Settings(
+        bot_token=token,
+        allowed_user_ids=frozenset(),
+        moderator_ids=frozenset(),
+        support_admin_ids=frozenset(),
+        database_path=tmp_path / "text-exercise.sqlite3",
+        log_path=tmp_path / "bot.log",
+        inactive_profile_months=12,
+        technical_log_retention_days=30,
+        vocabulary_pass_threshold=0.7,
+        reminder_poll_seconds=30,
+    )
+    register_handlers(dispatcher, database, settings)
+
+    async def send(text: str, message_id: int) -> str:
+        incoming = Message(
+            message_id=message_id,
+            date=datetime.now(UTC),
+            chat=Chat(id=789, type="private"),
+            from_user=User(id=789, is_bot=False, first_name="Student"),
+            text=text,
+        )
+        await dispatcher.feed_update(bot, Update(update_id=message_id, message=incoming))
+        return session.messages[-1].text
+
+    try:
+        retry = await send("not the answer", 1)
+        assert "Спробуйте ще раз" in retry
+        state = await database.get_user(789)
+        assert state["state"] == "exercise"
+        assert json.loads(state["state_data_json"])["attempts"] == 1
+
+        result = await send(f"  {exercise['correct_answer'].upper()}  ", 2)
+        assert "Правильно!" in session.messages[-2].text
+        assert exercise["correct_answer"] in session.messages[-2].text
+        assert result.startswith("Вправа 9/10:")
+        state = await database.get_user(789)
+        assert state["state"] == "exercise"
+        assert json.loads(state["state_data_json"])["exercise_index"] == 8
+        async with database._connect() as connection:
+            cursor = await connection.execute(
+                "SELECT was_correct FROM exercise_attempts WHERE exercise_id = ? ORDER BY id",
+                (exercise["id"],),
+            )
+            attempts = await cursor.fetchall()
+        assert [row["was_correct"] for row in attempts] == [0, 1]
     finally:
         await bot.session.close()

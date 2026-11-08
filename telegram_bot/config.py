@@ -19,6 +19,8 @@ class Settings:
     technical_log_retention_days: int
     vocabulary_pass_threshold: float
     reminder_poll_seconds: int
+    dataset_dir: Path = Path("data/english_cefr_datasets")
+    enable_cefr_sp_noncommercial: bool = False
 
 
 def _telegram_ids(value: str) -> frozenset[int]:
@@ -26,6 +28,18 @@ def _telegram_ids(value: str) -> frozenset[int]:
         return frozenset(int(item.strip()) for item in value.split(",") if item.strip())
     except ValueError as exc:
         raise ValueError("Telegram ID allowlists must contain comma-separated integers.") from exc
+
+
+def _environment_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValueError(f"{name} must be true or false.")
 
 
 def load_settings(*, require_token: bool = True) -> Settings:
@@ -56,4 +70,6 @@ def load_settings(*, require_token: bool = True) -> Settings:
         technical_log_retention_days=log_days,
         vocabulary_pass_threshold=threshold,
         reminder_poll_seconds=poll_seconds,
+        dataset_dir=Path(os.getenv("CEFR_DATASET_DIR", "data/english_cefr_datasets")),
+        enable_cefr_sp_noncommercial=_environment_flag("CEFR_SP_NONCOMMERCIAL_USE"),
     )

@@ -123,6 +123,30 @@ CREATE TABLE IF NOT EXISTS exercise_attempts (
     was_correct INTEGER NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS open_practice_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL,
+    task_type TEXT NOT NULL,
+    cefr_level TEXT,
+    topic TEXT,
+    was_correct INTEGER NOT NULL,
+    used_hint INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_open_practice_user_time
+    ON open_practice_attempts(telegram_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS user_wordbook (
+    telegram_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+    entry_id TEXT NOT NULL,
+    word TEXT NOT NULL,
+    part_of_speech TEXT NOT NULL,
+    definition TEXT NOT NULL,
+    cefr_level TEXT,
+    source_id TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (telegram_id, entry_id)
+);
 CREATE TABLE IF NOT EXISTS notification_log (
     telegram_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
     local_date TEXT NOT NULL,
@@ -162,7 +186,7 @@ class Database:
             await db.executescript(_SCHEMA)
             cursor = await db.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations")
             version = int((await cursor.fetchone())[0])
-            if version > 2:
+            if version > 5:
                 raise RuntimeError(f"Database schema version {version} is newer than this application supports.")
             if version == 0:
                 await db.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (1, ?)", (_now(),))
@@ -175,6 +199,16 @@ class Database:
                 for row in await cursor.fetchall():
                     course = json.loads(row["payload_json"])
                     await _insert_catalog(db, course, int(row["version"]), ignore=True)
+            if version < 3:
+                await db.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (3, ?)", (_now(),))
+            if version < 4:
+                await db.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (4, ?)", (_now(),))
+            if version < 5:
+                cursor = await db.execute("PRAGMA table_info(open_practice_attempts)")
+                columns = {row[1] for row in await cursor.fetchall()}
+                if "topic" not in columns:
+                    await db.execute("ALTER TABLE open_practice_attempts ADD COLUMN topic TEXT")
+                await db.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (5, ?)", (_now(),))
             await db.commit()
 
     @asynccontextmanager
@@ -252,10 +286,19 @@ class Database:
         for course in courses:
             async with self._connect() as db:
                 cursor = await db.execute(
-                    "SELECT 1 FROM course_versions WHERE course_id = ? LIMIT 1", (course["id"],)
+                    "SELECT version, payload_json, status FROM course_versions "
+                    "WHERE course_id = ? ORDER BY version",
+                    (course["id"],),
                 )
-                exists = await cursor.fetchone()
-            if not exists:
+                versions = await cursor.fetchall()
+            if not versions:
+                await self.add_course_version(course, "published")
+            elif (
+                len(versions) == 1
+                and versions[0]["version"] == 1
+                and versions[0]["status"] == "published"
+                and json.loads(versions[0]["payload_json"]) != course
+            ):
                 await self.add_course_version(course, "published")
 
     async def published_courses(self) -> list[dict[str, Any]]:
@@ -395,6 +438,110 @@ class Database:
             )
             await _record_study_day(db, telegram_id)
             await db.commit()
+
+    async def record_open_practice_attempt(
+        self,
+        telegram_id: int,
+        task_id: str,
+        task_type: str,
+        level: str | None,
+        correct: bool,
+        used_hint: bool,
+        topic: str | None = None,
+    ) -> None:
+        async with self._connect() as db:
+            await db.execute(
+                "INSERT INTO open_practice_attempts "
+                "(telegram_id, task_id, task_type, cefr_level, topic, was_correct, used_hint, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    telegram_id, task_id, task_type, level, topic,
+                    int(correct), int(used_hint), _now(),
+                ),
+            )
+            await _record_study_day(db, telegram_id)
+            await db.commit()
+
+    async def open_practice_summary(self, telegram_id: int) -> dict[str, Any]:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*), COALESCE(SUM(was_correct), 0), COALESCE(SUM(used_hint), 0) "
+                "FROM open_practice_attempts WHERE telegram_id = ?",
+                (telegram_id,),
+            )
+            totals = await cursor.fetchone()
+            grouped = await db.execute(
+                "SELECT task_type, cefr_level, topic, COUNT(*) AS attempts, "
+                "COALESCE(SUM(was_correct), 0) AS correct "
+                "FROM open_practice_attempts WHERE telegram_id = ? "
+                "GROUP BY task_type, cefr_level, topic ORDER BY task_type, cefr_level, topic",
+                (telegram_id,),
+            )
+            by_type = [dict(row) for row in await grouped.fetchall()]
+            grouped_topics = await db.execute(
+                "SELECT topic, cefr_level, COUNT(*) AS attempts, "
+                "COALESCE(SUM(was_correct), 0) AS correct "
+                "FROM open_practice_attempts WHERE telegram_id = ? "
+                "GROUP BY topic, cefr_level ORDER BY topic, cefr_level",
+                (telegram_id,),
+            )
+            by_topic = [dict(row) for row in await grouped_topics.fetchall()]
+        return {
+            "attempts": int(totals[0]),
+            "correct": int(totals[1]),
+            "hints": int(totals[2]),
+            "by_type": by_type,
+            "by_topic": by_topic,
+        }
+
+    async def recent_open_mistakes(self, telegram_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "WITH latest AS ("
+                " SELECT task_id, MAX(id) AS latest_id FROM open_practice_attempts "
+                " WHERE telegram_id = ? GROUP BY task_id"
+                ") "
+                "SELECT a.task_id, a.task_type, a.cefr_level, a.created_at "
+                "FROM open_practice_attempts a JOIN latest l ON l.latest_id = a.id "
+                "WHERE a.telegram_id = ? AND a.was_correct = 0 "
+                "ORDER BY a.id DESC LIMIT ?",
+                (telegram_id, telegram_id, limit),
+            )
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def save_user_word(self, telegram_id: int, word: dict[str, Any]) -> bool:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "INSERT OR IGNORE INTO user_wordbook "
+                "(telegram_id, entry_id, word, part_of_speech, definition, cefr_level, source_id, added_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    telegram_id, word["entry_id"], word["lemma"], word["part_of_speech"],
+                    word["definition"], word["cefr_level"], word["source_id"], _now(),
+                ),
+            )
+            await db.commit()
+        return cursor.rowcount == 1
+
+    async def user_wordbook(self, telegram_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT entry_id, word, part_of_speech, definition, cefr_level, source_id, added_at "
+                "FROM user_wordbook WHERE telegram_id = ? ORDER BY added_at DESC, word LIMIT ?",
+                (telegram_id, limit),
+            )
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def remove_user_word(self, telegram_id: int, entry_id: str) -> bool:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "DELETE FROM user_wordbook WHERE telegram_id = ? AND entry_id = ?",
+                (telegram_id, entry_id),
+            )
+            await db.commit()
+        return cursor.rowcount == 1
 
     async def current_study_streak(self, telegram_id: int) -> int:
         async with self._connect() as db:

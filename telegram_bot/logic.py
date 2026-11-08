@@ -6,18 +6,48 @@ import re
 from typing import Any
 
 
-LEVELS = ("A1", "A2", "B1", "B2", "C1")
+LEVELS = ("A1", "A2", "B1", "B2", "C1", "C2")
 TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
-def score_placement(questions: list[dict[str, Any]], answers: list[int]) -> tuple[int, str]:
+def placement_breakdown(
+    questions: list[dict[str, Any]], answers: list[int]
+) -> dict[str, tuple[int, int]]:
     if len(questions) != len(answers) or not questions:
         raise ValueError("Every placement question must have exactly one recorded answer.")
-    correct = sum(
-        1 for question, answer in zip(questions, answers, strict=True)
-        if answer == question["correct_index"]
-    )
-    level = LEVELS[min(correct, len(LEVELS) - 1)]
+    scores = {level: [0, 0] for level in LEVELS}
+    for question, answer in zip(questions, answers, strict=True):
+        level = question.get("level")
+        correct_index = question.get("correct_index")
+        if (
+            level not in scores
+            or not isinstance(correct_index, int)
+            or isinstance(correct_index, bool)
+            or not isinstance(answer, int)
+            or isinstance(answer, bool)
+        ):
+            raise ValueError("Placement answers need valid CEFR levels and integer option indexes.")
+        scores[level][1] += 1
+        scores[level][0] += answer == correct_index
+    return {
+        level: (correct, total)
+        for level, (correct, total) in scores.items()
+        if total
+    }
+
+
+def score_placement(questions: list[dict[str, Any]], answers: list[int]) -> tuple[int, str]:
+    breakdown = placement_breakdown(questions, answers)
+    correct = sum(level_correct for level_correct, _ in breakdown.values())
+    level = LEVELS[0]
+    for candidate in LEVELS:
+        result = breakdown.get(candidate)
+        if result is None:
+            break
+        level_correct, total = result
+        if level_correct * 4 < total * 3:
+            break
+        level = candidate
     return correct, level
 
 

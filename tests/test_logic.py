@@ -5,6 +5,7 @@ import pytest
 from telegram_bot.logic import (
     learning_plan,
     next_lesson,
+    placement_breakdown,
     reminder_is_due,
     retention_cutoff,
     review_passed,
@@ -16,15 +17,29 @@ from telegram_bot.logic import (
 
 
 def test_placement_score_maps_to_orientative_level() -> None:
+    levels = ("A1", "A2", "B1", "B2", "C1", "C2")
     questions = [
-        {"correct_index": 1},
-        {"correct_index": 0},
-        {"correct_index": 2},
-        {"correct_index": 1},
-        {"correct_index": 0},
+        {"level": level, "correct_index": 0}
+        for level in levels
+        for _ in range(4)
+    ]
+    answers = [0] * 16 + [1, 1, 0, 0] + [0] * 4
+
+    assert score_placement(questions, answers) == (22, "B2")
+    assert placement_breakdown(questions, answers)["C1"] == (2, 4)
+
+
+def test_placement_requires_a_passing_result_at_each_preceding_band() -> None:
+    levels = ("A1", "A2", "B1", "B2", "C1", "C2")
+    questions = [
+        {"level": level, "correct_index": 0}
+        for level in levels
+        for _ in range(4)
     ]
 
-    assert score_placement(questions, [1, 0, 0, 1, 2]) == (3, "B2")
+    assert score_placement(questions, [0] * len(questions)) == (24, "C2")
+    answers = [0] * 8 + [1, 1, 1, 0] + [0] * 12
+    assert score_placement(questions, answers) == (21, "A2")
 
 
 @pytest.mark.parametrize("answers", [[], [0]])

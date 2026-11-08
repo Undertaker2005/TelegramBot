@@ -1,0 +1,70 @@
+{
+  "as_of": "2026-11-08",
+  "sources": [
+    {
+      "id": "oewn-2025",
+      "name": "Open English WordNet 2025 core edition",
+      "url": "https://github.com/globalwordnet/english-wordnet",
+      "download_url": "https://en-word.net/static/english-wordnet-2025-json.zip",
+      "license": "CC BY 4.0; underlying Princeton WordNet license also applies",
+      "restrictions": "Retain the Open English WordNet and Princeton WordNet notices and attribution. Do not use Princeton's name in advertising or imply endorsement. No Ukrainian translations or CEFR labels are supplied by this dataset.",
+      "attribution": "Open English WordNet Team; data derived from Princeton WordNet. McCrae et al. (2019), English WordNet 2019 – An Open-Source WordNet for English.",
+      "downloaded": true,
+      "retrieved_on": "2026-11-08",
+      "records_imported": 184838,
+      "sha256": "7d749f6e2c39e6970e4997839dcf6e42fd281f3c2fae0171d2192bae8cfa4b51"
+    },
+    {
+      "id": "cefrj-vocabulary-1.5",
+      "name": "CEFR-J English Vocabulary Profile 1.5",
+      "url": "https://github.com/openlanguageprofiles/olp-en-cefrj",
+      "download_url": "https://raw.githubusercontent.com/openlanguageprofiles/olp-en-cefrj/master/cefrj-vocabulary-profile-1.5.csv",
+      "license": "Commercial and research use with attribution and citation; terms in source README",
+      "restrictions": "Copyright belongs to Tono Laboratory, Tokyo University of Foreign Studies.",
+      "attribution": "The CEFR-J Wordlist Version 1.5. Compiled by Yukio Tono, Tokyo University of Foreign Studies.",
+      "downloaded": true,
+      "retrieved_on": "2026-11-08",
+      "records_imported": 7799,
+      "sha256": "b0dd3c635f1c9a4fdf1490c7e5b7c48e8bbe55b652ad0c9860a95f98e10ae498"
+    },
+    {
+      "id": "cefrj-grammar-20180315",
+      "name": "CEFR-J English Grammar Profile 20180315",
+      "url": "https://github.com/openlanguageprofiles/olp-en-cefrj",
+      "download_url": "https://raw.githubusercontent.com/openlanguageprofiles/olp-en-cefrj/master/cefrj-grammar-profile-20180315.csv",
+      "license": "Commercial and research use with attribution and citation; terms in source README",
+      "restrictions": "Copyright belongs to Tono Laboratory, Tokyo University of Foreign Studies. The grammar profile is only partially translated from Japanese.",
+      "attribution": "The CEFR-J Grammar Profile Version 20180315. Tono Laboratory, Tokyo University of Foreign Studies.",
+      "downloaded": true,
+      "retrieved_on": "2026-11-08",
+      "records_imported": 500,
+      "sha256": "94953af376c1336166257e56c78d2139697b40ad8cf6f1235d8f9e89c2efc428"
+    },
+    {
+      "id": "octanove-vocabulary-c1c2-1.0",
+      "name": "Octanove Vocabulary Profile C1/C2 version 1.0",
+      "url": "https://github.com/openlanguageprofiles/olp-en-cefrj",
+      "download_url": "https://raw.githubusercontent.com/openlanguageprofiles/olp-en-cefrj/master/octanove-vocabulary-profile-c1c2-1.0.csv",
+      "license": "CC BY-SA 4.0",
+      "restrictions": "Adapted material must retain attribution and be shared under the same license.",
+      "attribution": "Octanove Vocabulary Profile C1/C2 version 1.0.",
+      "downloaded": true,
+      "retrieved_on": "2026-11-08",
+      "records_imported": 2097,
+      "sha256": "18c33a407f2f89f7b8de9671c6d45fe3ea0bce45e7d2d7dcaab48d73e0f7b380"
+    },
+    {
+      "id": "cefr-sp-excluded",
+      "name": "CEFR-SP English sentence subset",
+      "url": "https://huggingface.co/datasets/UniversalCEFR/cefr_sp_en",
+      "download_url": null,
+      "license": "CC BY-NC-SA 4.0",
+      "restrictions": "Non-commercial only; not downloaded or included in the commercial-capable dataset.",
+      "attribution": "Arase, Uchida & Kajiwara (2022), CEFR-Based Sentence-Difficulty Annotation and Assessment.",
+      "downloaded": false,
+      "retrieved_on": null,
+      "records_imported": 0
+    }
+  ],
+  "license_policy": "Only the downloaded sources marked commercial/research use or CC BY/CC BY-SA are included. Non-commercial-only CEFR-SP is documented but excluded."
+}

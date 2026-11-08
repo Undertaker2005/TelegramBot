@@ -16,6 +16,8 @@ from telegram_bot.config import Settings, load_settings
 from telegram_bot.content import validate_course
 from telegram_bot.database import Database
 from telegram_bot.logic import learning_plan, reminder_is_due, score_placement
+from telegram_bot.open_dataset import OpenDataset
+from telegram_bot.reference_data import ReferenceLibrary
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -79,7 +81,7 @@ async def _local_check(settings: Settings) -> None:
             general["placement_test"],
             [question["correct_index"] for question in general["placement_test"]],
         )
-        if correct != len(general["placement_test"]) or level != "C1":
+        if correct != len(general["placement_test"]) or level != "C2":
             raise RuntimeError("Placement assessment did not return the expected upper-band result.")
         plan = learning_plan(10)
         if plan["new_words"] != 4 or plan["exercises"] != 2:
@@ -133,13 +135,22 @@ async def _run(settings: Settings) -> None:
     await database.initialize()
     courses = _load_courses()
     await database.seed_courses(courses)
+    dataset_dir = settings.dataset_dir
+    if not dataset_dir.is_absolute():
+        dataset_dir = ROOT / dataset_dir
+    reference = ReferenceLibrary.load(
+        dataset_dir,
+        courses,
+        enable_cefr_sp=settings.enable_cefr_sp_noncommercial,
+    )
     await database.cleanup_retention(
         settings.inactive_profile_months, settings.technical_log_retention_days
     )
 
     bot = Bot(token=settings.bot_token)
     dispatcher = Dispatcher()
-    register_handlers(dispatcher, database, settings)
+    open_dataset = OpenDataset(ROOT / "data" / "open_training.sqlite3")
+    register_handlers(dispatcher, database, settings, reference, open_dataset)
     await configure_commands(bot)
     worker = asyncio.create_task(reminder_worker(bot, database, settings), name="reminder-worker")
     try:

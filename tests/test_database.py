@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -65,6 +66,77 @@ async def test_profile_progress_persists_and_delete_removes_dependents(
 
 
 @pytest.mark.asyncio
+async def test_open_practice_statistics_mistakes_and_wordbook_are_user_scoped(
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "open-practice.sqlite3")
+    await db.initialize()
+    async with db._connect() as connection:
+        migration = await connection.execute("SELECT MAX(version) FROM schema_migrations")
+        assert (await migration.fetchone())[0] == 5
+        columns = await connection.execute("PRAGMA table_info(open_practice_attempts)")
+        assert "topic" in {row["name"] for row in await columns.fetchall()}
+    await db.create_user(123456)
+    await db.update_user(123456, privacy_accepted=1)
+
+    await db.record_open_practice_attempt(
+        123456, "task-a", "definition_to_word", "A1", False, True, "Food"
+    )
+    await db.record_open_practice_attempt(
+        123456, "task-b", "synonym_choice", None, True, False, "Travel"
+    )
+    summary = await db.open_practice_summary(123456)
+    assert summary["attempts"] == 2
+    assert summary["correct"] == 1
+    assert summary["hints"] == 1
+    assert {item["topic"] for item in summary["by_topic"]} == {"Food", "Travel"}
+    assert {item["task_id"] for item in await db.recent_open_mistakes(123456)} == {"task-a"}
+
+    word = {
+        "entry_id": "word-1",
+        "lemma": "apple",
+        "part_of_speech": "noun",
+        "definition": "A fruit.",
+        "cefr_level": "A1",
+        "source_id": "oewn-2025",
+    }
+    assert await db.save_user_word(123456, word)
+    assert not await db.save_user_word(123456, word)
+    assert (await db.user_wordbook(123456))[0]["word"] == "apple"
+    assert await db.remove_user_word(123456, "word-1")
+    assert await db.user_wordbook(123456) == []
+
+
+@pytest.mark.asyncio
+async def test_existing_open_attempts_table_migrates_topic_column(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-open-practice.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+            INSERT INTO schema_migrations VALUES (3, '2026-01-01T00:00:00+00:00');
+            CREATE TABLE open_practice_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER NOT NULL,
+                task_id TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                cefr_level TEXT,
+                was_correct INTEGER NOT NULL,
+                used_hint INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+    db = Database(path)
+    await db.initialize()
+    async with db._connect() as connection:
+        columns = await connection.execute("PRAGMA table_info(open_practice_attempts)")
+        assert "topic" in {row["name"] for row in await columns.fetchall()}
+        version = await connection.execute("SELECT MAX(version) FROM schema_migrations")
+        assert (await version.fetchone())[0] == 5
+
+
+@pytest.mark.asyncio
 async def test_imported_course_requires_moderator_approval_and_revisions_are_safe(
     tmp_path: Path, demo_courses: list[dict]
 ) -> None:
@@ -82,6 +154,52 @@ async def test_imported_course_requires_moderator_approval_and_revisions_are_saf
     assert await db.approve_course(course["id"], version)
     assert (await db.get_published_course(course["id"]))["title"] == updated["title"]
     assert not await db.approve_course(course["id"], version)
+
+    seed_edit = json.loads(json.dumps(course))
+    seed_edit["title"] = "Нова початкова назва"
+    await db.seed_courses([seed_edit])
+    assert (await db.get_published_course(course["id"]))["title"] == updated["title"]
+
+
+@pytest.mark.asyncio
+async def test_seed_refreshes_only_pristine_course_and_preserves_user_progress(
+    tmp_path: Path, demo_courses: list[dict]
+) -> None:
+    db = Database(tmp_path / "seed-refresh.sqlite3")
+    await db.initialize()
+    course = demo_courses[0]
+    old_course = json.loads(json.dumps(course))
+    old_lesson = next(
+        item for item in old_course["lessons"] if item["id"] == "catalog-general-1-1"
+    )
+    old_lesson["exercises"][0]["sentence"] = "We discussed the ____ today."
+    await db.seed_courses([old_course])
+    await db.create_user(123456)
+    await db.complete_lesson(123456, course["id"], course["lessons"][0]["id"])
+
+    expected_sentence = next(
+        item for item in course["lessons"] if item["id"] == "catalog-general-1-1"
+    )["exercises"][0]["sentence"]
+    await db.seed_courses([course])
+
+    published = await db.get_published_course(course["id"])
+    refreshed_lesson = next(
+        item for item in published["lessons"] if item["id"] == "catalog-general-1-1"
+    )
+    assert refreshed_lesson["exercises"][0]["sentence"] == expected_sentence
+    assert await db.completed_lessons(123456, course["id"]) == {course["lessons"][0]["id"]}
+
+    await db.seed_courses([course])
+    async with db._connect() as connection:
+        cursor = await connection.execute(
+            "SELECT version, status FROM course_versions WHERE course_id = ? ORDER BY version",
+            (course["id"],),
+        )
+        versions = await cursor.fetchall()
+    assert [(row["version"], row["status"]) for row in versions] == [
+        (1, "published"),
+        (2, "published"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -131,7 +249,7 @@ async def test_content_catalog_can_be_browsed_as_individual_words_and_exercises(
         word = await cursor.fetchone()
         cursor = await connection.execute(
             "SELECT sentence, correct_answer, explanation FROM exercise_catalog "
-            "WHERE exercise_id = 'exercise-catalog-business-agenda'"
+            "WHERE exercise_id = 'exercise-catalog-business-agenda-1'"
         )
         exercise = await cursor.fetchone()
 

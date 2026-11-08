@@ -14,7 +14,7 @@ def _read_demo_data() -> tuple[list[dict], dict]:
     return courses, bank
 
 
-def test_course_catalog_includes_320_additional_words_and_exercises() -> None:
+def test_course_catalog_includes_320_words_and_640_varied_exercises() -> None:
     courses, _ = _read_demo_data()
 
     demo_words = [
@@ -34,14 +34,88 @@ def test_course_catalog_includes_320_additional_words_and_exercises() -> None:
 
     assert len(demo_words) == 320
     assert len({word["word"].casefold() for word in demo_words}) == 320
-    assert len(demo_exercises) == 320
+    assert len(demo_exercises) == 640
     assert {course["track"] for course in courses} == {"general", "business"}
-    assert all(word["example"].strip() and word["example_translation"].strip() for word in demo_words)
     assert all(
-        "____" in exercise["sentence"]
-        and exercise["correct_answer"] in exercise["options"]
+        word["example"].strip()
+        and word["word"] in word["example"]
+        and "____" not in word["example"]
+        and word["example_translation"].strip()
+        for word in demo_words
+    )
+    assert all(
+        exercise["sentence"].strip()
+        and (
+            exercise["options"] == []
+            if exercise.get("answer_mode") == "text"
+            else exercise["correct_answer"] in exercise["options"]
+        )
         and exercise["explanation"].strip()
         for exercise in demo_exercises
+    )
+    assert all(
+        len({exercise["sentence"] for exercise in lesson["exercises"]}) >= 8
+        for course in courses
+        for lesson in course["lessons"]
+        if lesson["id"].startswith("catalog-")
+    )
+    home_lesson = next(
+        lesson
+        for course in courses
+        for lesson in course["lessons"]
+        if lesson["id"] == "catalog-general-1-1"
+    )
+    assert [exercise["sentence"] for exercise in home_lesson["exercises"]] == [
+        "They bought a ____ with a garden and a front door.",
+        "Оберіть український переклад слова “house”:",
+        "Оберіть український переклад слова “apartment”:",
+        "Оберіть англійський відповідник до «квартира»:",
+        "Оберіть англійський відповідник до «кімната»:",
+        "Оберіть правильний переклад речення:\nThere is a window in every room of this apartment.",
+        "Оберіть правильний переклад речення:\nI made breakfast in the kitchen.",
+        "Напишіть англійське слово для перекладу «кухня»:",
+        "Напишіть англійське слово для перекладу «спальня»:",
+        "She sleeps in the ____ and cooks in the kitchen.",
+    ]
+    assert [exercise["answer_mode"] for exercise in home_lesson["exercises"]] == [
+        "choice",
+        "choice",
+        "choice",
+        "choice",
+        "choice",
+        "choice",
+        "choice",
+        "text",
+        "text",
+        "choice",
+    ]
+    assert {exercise["correct_answer"] for exercise in home_lesson["exercises"]} == {
+        "house",
+        "будинок",
+        "квартира",
+        "apartment",
+        "room",
+        "У цій квартирі в кожній кімнаті є вікно.",
+        "Я приготував сніданок на кухні.",
+        "kitchen",
+        "bedroom",
+    }
+
+    answer_positions = [
+        exercise["options"].index(exercise["correct_answer"])
+        for exercise in demo_exercises
+        if exercise["answer_mode"] == "choice"
+    ]
+    assert set(answer_positions) == {0, 1, 2}
+    assert sum(exercise["answer_mode"] == "text" for exercise in demo_exercises) == 128
+    assert all(
+        len(course["placement_test"]) == 24
+        and {question["level"] for question in course["placement_test"]}
+        == {"A1", "A2", "B1", "B2", "C1", "C2"}
+        and {question["skill"] for question in course["placement_test"]}
+        == {"grammar", "vocabulary", "reading", "usage"}
+        and len({question["correct_index"] for question in course["placement_test"]}) > 1
+        for course in courses
     )
 
 

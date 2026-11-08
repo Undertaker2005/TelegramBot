@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 
 _COURSE_ID = re.compile(r"^[a-z0-9_-]{2,64}$")
-_LEVELS = {"A1", "A2", "B1", "B2", "C1"}
+_LEVELS = {"A1", "A2", "B1", "B2", "C1", "C2"}
 
 
 def validate_course(data: Any) -> dict[str, Any]:
@@ -24,7 +24,7 @@ def validate_course(data: Any) -> dict[str, Any]:
     if not all(isinstance(data[key], str) and data[key].strip() for key in ("title", "description")):
         raise ValueError("Course title and description must be non-empty text.")
     if data["level"] not in _LEVELS:
-        raise ValueError("Course level must be one of A1, A2, B1, B2, or C1.")
+        raise ValueError("Course level must be one of A1, A2, B1, B2, C1, or C2.")
 
     questions = data["placement_test"]
     if not isinstance(questions, list) or not questions:
@@ -88,16 +88,26 @@ def validate_course(data: Any) -> dict[str, Any]:
             raise ValueError("Every lesson needs at least one exercise.")
         _unique_ids(exercises, f"exercises in lesson {lesson['id']}")
         for exercise in exercises:
-            if not isinstance(exercise.get("sentence"), str) or "____" not in exercise["sentence"]:
-                raise ValueError("Exercises need a sentence containing the ____ blank marker.")
+            if not isinstance(exercise.get("sentence"), str) or not exercise["sentence"].strip():
+                raise ValueError("Every exercise needs a non-empty question.")
+            answer_mode = exercise.get("answer_mode", "choice")
+            if answer_mode not in {"choice", "text"}:
+                raise ValueError("Exercise answer_mode must be 'choice' or 'text'.")
             options = exercise.get("options")
-            if (
+            if answer_mode == "text":
+                if (
+                    options != []
+                    or not isinstance(exercise.get("correct_answer"), str)
+                    or not exercise["correct_answer"].strip()
+                ):
+                    raise ValueError("Text-answer exercises need empty options and a non-empty correct_answer.")
+            elif (
                 not isinstance(options, list)
                 or len(options) < 2
                 or not all(isinstance(option, str) and option.strip() for option in options)
                 or exercise.get("correct_answer") not in options
             ):
-                raise ValueError("Exercises need at least two options and a correct_answer from those options.")
+                raise ValueError("Choice exercises need at least two options and a correct_answer from those options.")
             if not isinstance(exercise.get("explanation"), str) or not exercise["explanation"].strip():
                 raise ValueError("Every exercise needs a prepared explanation.")
             if not isinstance(exercise.get("max_attempts", 1), int) or exercise.get("max_attempts", 1) < 1:
