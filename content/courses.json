@@ -6018,6 +6018,270 @@
             "id": "exercise-catalog-general-strong-2"
           }
         ]
+      },
+      {
+        "id": "general-b1-university",
+        "order": 35,
+        "level": "B1",
+        "title": "Навчання й університетське життя",
+        "objectives": "Обговорювати навчання, університетські простори та дедлайни.",
+        "explanation": "Ця тема допоможе говорити про навчання й студентський досвід. Слово scholarship означає стипендію, а deadline — кінцевий термін виконання завдання.",
+        "vocabulary": [
+          {
+            "id": "general-b1-campus",
+            "word": "campus",
+            "translation": "університетський кампус",
+            "part_of_speech": "іменник",
+            "example": "The campus is close to the city centre.",
+            "example_translation": "Університетський кампус розташований близько до центру міста."
+          },
+          {
+            "id": "general-b1-scholarship",
+            "word": "scholarship",
+            "translation": "стипендія",
+            "part_of_speech": "іменник",
+            "example": "She received a scholarship to study abroad.",
+            "example_translation": "Вона отримала стипендію, щоб навчатися за кордоном."
+          },
+          {
+            "id": "general-b1-deadline",
+            "word": "deadline",
+            "translation": "кінцевий термін",
+            "part_of_speech": "іменник",
+            "example": "The deadline for the project is Friday.",
+            "example_translation": "Кінцевий термін виконання проєкту — п'ятниця."
+          }
+        ],
+        "exercises": [
+          {
+            "id": "general-b1-university-ex1",
+            "sentence": "I applied for a ____ to study abroad.",
+            "options": [
+              "scholarship",
+              "campus",
+              "deadline"
+            ],
+            "correct_answer": "scholarship",
+            "explanation": "Scholarship — це стипендія, на яку можна подати заявку для навчання."
+          },
+          {
+            "id": "general-b1-university-ex2",
+            "sentence": "Напишіть англійською «університетський кампус»:",
+            "options": [],
+            "correct_answer": "campus",
+            "answer_mode": "text",
+            "explanation": "Campus означає університетську територію або кампус."
+          },
+          {
+            "id": "general-b1-university-ex3",
+            "sentence": "Оберіть переклад речення: The deadline for the project is Friday.",
+            "options": [
+              "Проєкт розпочнеться наступної п'ятниці.",
+              "Кінцевий термін виконання проєкту — п'ятниця.",
+              "Студент отримав стипендію в п'ятницю."
+            ],
+            "correct_answer": "Кінцевий термін виконання проєкту — п'ятниця.",
+            "explanation": "Deadline — кінцевий термін; the deadline is Friday означає, що крайній строк — у п'ятницю."
+          }
+        ]
+      },
+      {
+        "id": "general-b2-listening",
+        "order": 36,
+        "level": "B2",
+        "title": "Аудіювання: розуміння складних розмов",
+        "objectives": "Розпізнавати головну думку, аргументи й позицію мовця.",
+        "explanation": "Під час аудіювання стежте за головною думкою та словами-зв'язками. Слухачеві не обов'язково розуміти кожне слово, щоб визначити позицію мовця.",
+        "vocabulary": [
+          {
+            "id": "general-b2-implication",
+            "word": "implication",
+            "translation": "непрямий висновок; підтекст",
+            "part_of_speech": "іменник",
+            "example": "The implication was that the plan needed more time.",
+            "example_translation": "Підтекст полягав у тому, що плану потрібно більше часу."
+          },
+          {
+            "id": "general-b2-perspective",
+            "word": "perspective",
+            "translation": "погляд; перспектива",
+            "part_of_speech": "іменник",
+            "example": "The interview offered a different perspective.",
+            "example_translation": "Інтерв'ю запропонувало інший погляд."
+          },
+          {
+            "id": "general-b2-emphasis",
+            "word": "emphasis",
+            "translation": "наголос; особливе значення",
+            "part_of_speech": "іменник",
+            "example": "The speaker placed emphasis on practical solutions.",
+            "example_translation": "Мовець наголосив на практичних рішеннях."
+          }
+        ],
+        "exercises": [
+          {
+            "id": "general-b2-listening-ex1",
+            "sentence": "The speaker's main ____ was that the proposal needed more evidence.",
+            "options": [
+              "point",
+              "emphasis",
+              "perspective"
+            ],
+            "correct_answer": "point",
+            "explanation": "Main point — головна думка або основний аргумент мовця."
+          },
+          {
+            "id": "general-b2-listening-ex2",
+            "sentence": "Напишіть англійською «непрямий висновок»:",
+            "options": [],
+            "correct_answer": "implication",
+            "answer_mode": "text",
+            "explanation": "Implication — висновок або значення, яке не висловлене прямо."
+          },
+          {
+            "id": "general-b2-listening-ex3",
+            "sentence": "Although the speaker acknowledged a risk, she ____ that the benefits were greater.",
+            "options": [
+              "argued",
+              "argues",
+              "arguing"
+            ],
+            "correct_answer": "argued",
+            "explanation": "У розповіді про завершену розмову вживаємо минулу форму argued."
+          }
+        ]
+      },
+      {
+        "id": "general-c1-social-media",
+        "order": 37,
+        "level": "C1",
+        "title": "Соціальні мережі та медіаграмотність",
+        "objectives": "Обговорювати достовірність інформації та вплив онлайн-контенту.",
+        "explanation": "У критичному читанні розрізняйте факт, оцінку й припущення. Звертайте увагу на джерело, докази та спосіб подання інформації.",
+        "vocabulary": [
+          {
+            "id": "general-c1-misinformation",
+            "word": "misinformation",
+            "translation": "недостовірна інформація",
+            "part_of_speech": "іменник",
+            "example": "The campaign aimed to correct misinformation online.",
+            "example_translation": "Кампанія мала на меті виправити недостовірну інформацію в інтернеті."
+          },
+          {
+            "id": "general-c1-nuanced",
+            "word": "nuanced",
+            "translation": "тонкий; такий, що враховує нюанси",
+            "part_of_speech": "прикметник",
+            "example": "The report gives a nuanced view of the debate.",
+            "example_translation": "Звіт подає погляд на дискусію з урахуванням нюансів."
+          },
+          {
+            "id": "general-c1-credibility",
+            "word": "credibility",
+            "translation": "достовірність; довіра",
+            "part_of_speech": "іменник",
+            "example": "Readers questioned the credibility of the source.",
+            "example_translation": "Читачі засумнівалися в достовірності джерела."
+          }
+        ],
+        "exercises": [
+          {
+            "id": "general-c1-social-media-ex1",
+            "sentence": "The article offers a ____ analysis rather than a simple yes-or-no answer.",
+            "options": [
+              "nuanced",
+              "credible",
+              "misinformed"
+            ],
+            "correct_answer": "nuanced",
+            "explanation": "Nuanced analysis враховує складність питання та різні відтінки значення."
+          },
+          {
+            "id": "general-c1-social-media-ex2",
+            "sentence": "Напишіть англійською «достовірність джерела»:",
+            "options": [],
+            "correct_answer": "credibility of the source",
+            "answer_mode": "text",
+            "explanation": "Credibility означає достовірність або надійність; the source — джерело."
+          },
+          {
+            "id": "general-c1-social-media-ex3",
+            "sentence": "Оберіть переклад: Although the post was widely shared, its claims were not supported by evidence.",
+            "options": [
+              "Хоча допис широко поширили, його твердження не підтверджувалися доказами.",
+              "Допис поширили, бо всі його твердження підтвердили доказами.",
+              "Докази поширили разом із дописом у соціальних мережах."
+            ],
+            "correct_answer": "Хоча допис широко поширили, його твердження не підтверджувалися доказами.",
+            "explanation": "Although передає протиставлення, а not supported by evidence означає «не підтверджувалися доказами»."
+          }
+        ]
+      },
+      {
+        "id": "general-c2-disagreement",
+        "order": 38,
+        "level": "C2",
+        "title": "Ввічлива незгода та інтелектуальна дискусія",
+        "objectives": "Точно висловлювати заперечення, застереження та поступки в аргументації.",
+        "explanation": "У складній дискусії можна спершу визнати слушну частину чужого аргументу, а потім пояснити незгоду. Формулювання допомагає залишити тон конструктивним.",
+        "vocabulary": [
+          {
+            "id": "general-c2-concession",
+            "word": "concession",
+            "translation": "поступка; визнання аргументу",
+            "part_of_speech": "іменник",
+            "example": "Her concession made the disagreement more constructive.",
+            "example_translation": "Її визнання частини аргументу зробило незгоду конструктивнішою."
+          },
+          {
+            "id": "general-c2-rebuttal",
+            "word": "rebuttal",
+            "translation": "спростування; контраргумент",
+            "part_of_speech": "іменник",
+            "example": "He offered a concise rebuttal to the claim.",
+            "example_translation": "Він стисло спростував це твердження."
+          },
+          {
+            "id": "general-c2-caveat",
+            "word": "caveat",
+            "translation": "застереження",
+            "part_of_speech": "іменник",
+            "example": "I agree, with one important caveat.",
+            "example_translation": "Я погоджуюся, але з одним важливим застереженням."
+          }
+        ],
+        "exercises": [
+          {
+            "id": "general-c2-disagreement-ex1",
+            "sentence": "By acknowledging one valid point, she made a useful ____ before presenting her rebuttal.",
+            "options": [
+              "concession",
+              "caveat",
+              "assumption"
+            ],
+            "correct_answer": "concession",
+            "explanation": "Concession — визнання частини аргументу співрозмовника."
+          },
+          {
+            "id": "general-c2-disagreement-ex2",
+            "sentence": "Напишіть англійською «застереження»:",
+            "options": [],
+            "correct_answer": "caveat",
+            "answer_mode": "text",
+            "explanation": "Caveat — застереження або умова, яку важливо врахувати."
+          },
+          {
+            "id": "general-c2-disagreement-ex3",
+            "sentence": "Choose the closest meaning of rebuttal.",
+            "options": [
+              "A reasoned response that challenges a claim",
+              "A complete agreement with a claim",
+              "A brief introduction to a topic"
+            ],
+            "correct_answer": "A reasoned response that challenges a claim",
+            "explanation": "Rebuttal — обґрунтована відповідь, що заперечує або спростовує твердження."
+          }
+        ]
       }
     ]
   },
@@ -12038,6 +12302,138 @@
             "max_attempts": 2,
             "answer_mode": "choice",
             "id": "exercise-catalog-business-sustainable-2"
+          }
+        ]
+      },
+      {
+        "id": "business-c1-leadership",
+        "order": 35,
+        "level": "C1",
+        "title": "Лідерство та стратегія команди",
+        "objectives": "Обговорювати відповідальність, делегування та спільні рішення.",
+        "explanation": "У професійних обговореннях чітко називайте відповідальність, пояснюйте підстави рішення й відокремлюйте згоду від компромісу.",
+        "vocabulary": [
+          {
+            "id": "business-c1-accountability",
+            "word": "accountability",
+            "translation": "підзвітність; відповідальність за результат",
+            "part_of_speech": "іменник",
+            "example": "Clear accountability helps the team deliver on time.",
+            "example_translation": "Чіткий розподіл відповідальності допомагає команді виконати роботу вчасно."
+          },
+          {
+            "id": "business-c1-alignment",
+            "word": "alignment",
+            "translation": "узгодженість; спільний напрям",
+            "part_of_speech": "іменник",
+            "example": "There is strong alignment between the team's goals and its strategy.",
+            "example_translation": "Цілі команди та її стратегія добре узгоджені."
+          },
+          {
+            "id": "business-c1-delegate",
+            "word": "delegate",
+            "translation": "делегувати",
+            "part_of_speech": "дієслово",
+            "example": "Managers should delegate tasks with clear expectations.",
+            "example_translation": "Керівникам варто делегувати завдання з чіткими очікуваннями."
+          }
+        ],
+        "exercises": [
+          {
+            "id": "business-c1-leadership-ex1",
+            "sentence": "The teams achieved strong ____ on their main priorities.",
+            "options": [
+              "alignment",
+              "accountability",
+              "delegation"
+            ],
+            "correct_answer": "alignment",
+            "explanation": "Alignment означає узгодженість цілей або спільний напрям дій."
+          },
+          {
+            "id": "business-c1-leadership-ex2",
+            "sentence": "Напишіть англійською «делегувати»:",
+            "options": [],
+            "correct_answer": "delegate",
+            "answer_mode": "text",
+            "explanation": "Delegate означає передати частину завдань або повноважень іншій людині."
+          },
+          {
+            "id": "business-c1-leadership-ex3",
+            "sentence": "Оберіть переклад: Clear accountability helps the team deliver on time.",
+            "options": [
+              "Чіткий розподіл відповідальності допомагає команді виконати роботу вчасно.",
+              "Команда делегувала відповідальність за затримку.",
+              "Спільна згода заважає команді завершити роботу."
+            ],
+            "correct_answer": "Чіткий розподіл відповідальності допомагає команді виконати роботу вчасно.",
+            "explanation": "Accountability — відповідальність за результат; deliver on time — виконати вчасно."
+          }
+        ]
+      },
+      {
+        "id": "business-c2-negotiations",
+        "order": 36,
+        "level": "C2",
+        "title": "Переговори: поступки й застереження",
+        "objectives": "Точно формулювати компроміси та умови в складних переговорах.",
+        "explanation": "Під час переговорів розрізняйте поступку, умову та застереження. Перед погодженням перевіряйте, до чого саме зобов'язує кожне формулювання.",
+        "vocabulary": [
+          {
+            "id": "business-c2-leverage",
+            "word": "leverage",
+            "translation": "важіль впливу; використовувати перевагу",
+            "part_of_speech": "іменник; дієслово",
+            "example": "The company used its expertise as leverage in the talks.",
+            "example_translation": "Компанія використала свій досвід як важіль впливу на переговорах."
+          },
+          {
+            "id": "business-c2-concession",
+            "word": "concession",
+            "translation": "поступка",
+            "part_of_speech": "іменник",
+            "example": "Both sides made a small concession to reach an agreement.",
+            "example_translation": "Обидві сторони зробили невелику поступку, щоб досягти домовленості."
+          },
+          {
+            "id": "business-c2-caveat",
+            "word": "caveat",
+            "translation": "застереження; умова",
+            "part_of_speech": "іменник",
+            "example": "We can approve the proposal, with one caveat.",
+            "example_translation": "Ми можемо схвалити пропозицію, але з одним застереженням."
+          }
+        ],
+        "exercises": [
+          {
+            "id": "business-c2-negotiations-ex1",
+            "sentence": "Both sides made a small ____ to reach an agreement.",
+            "options": [
+              "concession",
+              "leverage",
+              "liability"
+            ],
+            "correct_answer": "concession",
+            "explanation": "Concession — поступка, на яку сторона йде під час переговорів."
+          },
+          {
+            "id": "business-c2-negotiations-ex2",
+            "sentence": "Напишіть англійською «застереження»:",
+            "options": [],
+            "correct_answer": "caveat",
+            "answer_mode": "text",
+            "explanation": "Caveat — важливе застереження або умова."
+          },
+          {
+            "id": "business-c2-negotiations-ex3",
+            "sentence": "Choose the closest meaning of leverage in a negotiation.",
+            "options": [
+              "An advantage used to influence an outcome",
+              "A promise to accept every condition",
+              "A minor detail with no effect"
+            ],
+            "correct_answer": "An advantage used to influence an outcome",
+            "explanation": "У переговорах leverage — це перевага або ресурс, який можна використати для впливу на результат."
           }
         ]
       }

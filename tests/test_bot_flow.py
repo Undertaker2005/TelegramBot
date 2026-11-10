@@ -11,9 +11,17 @@ import pytest
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.base import BaseSession
 from aiogram.methods import SendMessage
-from aiogram.types import CallbackQuery, Chat, InlineKeyboardMarkup, Message, Update, User
+from aiogram.types import (
+    CallbackQuery,
+    Chat,
+    InlineKeyboardMarkup,
+    Message,
+    ReplyKeyboardMarkup,
+    Update,
+    User,
+)
 
-from telegram_bot.bot import register_handlers
+from telegram_bot.bot import _shuffled_option_order, configure_commands, register_handlers
 from telegram_bot.config import Settings
 from telegram_bot.content import validate_course
 from telegram_bot.database import Database
@@ -25,14 +33,19 @@ class MemorySession(BaseSession):
     def __init__(self) -> None:
         super().__init__()
         self.messages: list[Message] = []
+        self.reply_keyboards: list[ReplyKeyboardMarkup] = []
+        self.methods: list[Any] = []
         self.next_message_id = 1
 
     async def close(self) -> None:
         return None
 
     async def make_request(self, bot: Bot, method: Any, timeout: int | None = None) -> Any:
+        self.methods.append(method)
         if not isinstance(method, SendMessage):
             return True
+        if isinstance(method.reply_markup, ReplyKeyboardMarkup):
+            self.reply_keyboards.append(method.reply_markup)
         message = Message(
             message_id=self.next_message_id,
             date=datetime.now(UTC),
@@ -59,6 +72,20 @@ class MemorySession(BaseSession):
     ) -> AsyncGenerator[bytes, None]:
         if False:
             yield b""
+
+
+def test_answer_options_change_order_from_the_previous_lesson_run() -> None:
+    options = ["am", "are", "is", "be"]
+    previous_order = [0, 1, 2, 3]
+
+    for _ in range(20):
+        order, correct_position = _shuffled_option_order(
+            options, correct_index=0, previous_order=previous_order
+        )
+        assert order != previous_order
+        assert sorted(order) == list(range(len(options)))
+        assert order[correct_position] == 0
+        previous_order = order
 
 
 @pytest.mark.asyncio
@@ -124,6 +151,11 @@ async def test_user_completes_onboarding_and_reaches_first_exercise(tmp_path: Pa
         course_user = await database.get_user(student.id)
         assert course_user["state"] == "placement", session.messages[-1].text
         placement_course = await database.get_published_course("english_general")
+        await send_text("/continue")
+        resumed_placement = await database.get_user(student.id)
+        assert resumed_placement["state"] == "placement"
+        assert json.loads(resumed_placement["state_data_json"])["index"] == 0
+        assert session.messages[-1].text.startswith("Запитання 1/")
         previous_correct_position = None
         for index, question in enumerate(placement_course["placement_test"]):
             placement_state = json.loads(
@@ -146,6 +178,9 @@ async def test_user_completes_onboarding_and_reaches_first_exercise(tmp_path: Pa
             await click(f"p:{index}:{incorrect_option}")
         assert (await database.get_user(student.id))["state"] == "placement_result"
         assert (await database.get_user(student.id))["level"] == "A1"
+        await send_text("/continue")
+        assert (await database.get_user(student.id))["state"] == "placement_result"
+        assert session.messages[-1].text.startswith("Орієнтовний рівень: A1")
         await click("placement:accept")
         await click("pace:5")
         await click("plan:confirm")
@@ -160,6 +195,65 @@ async def test_user_completes_onboarding_and_reaches_first_exercise(tmp_path: Pa
         assert user["minutes_per_day"] == 5
         assert user["reminder_time"] == "19:30"
         assert user["timezone"] == "Europe/Kyiv"
+        assert user["state"] is None
+        assert session.reply_keyboards
+        main_menu_labels = {
+            button.text
+            for row in session.reply_keyboards[-1].keyboard
+            for button in row
+        }
+        assert {
+            "📚 Навчання",
+            "✍️ Практика",
+            "📊 Прогрес",
+            "👤 Профіль",
+            "⚙️ Налаштування",
+        } == main_menu_labels
+        await send_text("📊 Прогрес")
+        progress_text = session.messages[-1].text
+        assert "Уроків часів завершено: 0/" in progress_text
+        assert "Активних складних слів: 0" in progress_text
+        await send_text("✍️ Практика")
+        practice_buttons = {
+            button.text
+            for row in session.messages[-1].reply_markup.inline_keyboard
+            for button in row
+        }
+        assert {
+            "Коротка · 5",
+            "Стандартна · 10",
+            "Довга · 20",
+            "Пробний іспит",
+        } <= practice_buttons
+        await send_text("📚 Навчання")
+        learning_buttons = {
+            button.text
+            for row in session.messages[-1].reply_markup.inline_keyboard
+            for button in row
+        }
+        assert {
+            "📘 Новий матеріал",
+            "🔁 Повторити матеріал",
+            "🧠 Складні слова",
+            "🕒 Англійські часи",
+            "🎥 Відеоуроки",
+        } <= learning_buttons
+        await click("nav:new")
+        topic_button = next(
+            button.callback_data
+            for row in session.messages[-1].reply_markup.inline_keyboard
+            for button in row
+            if button.callback_data.startswith("topic:")
+        )
+        await click(topic_button)
+        lesson_button = next(
+            button.callback_data
+            for row in session.messages[-1].reply_markup.inline_keyboard
+            for button in row
+            if button.callback_data.startswith("lesson:")
+        )
+        await click(lesson_button)
+        user = await database.get_user(student.id)
         assert user["state"] == "exercise"
         assert session.messages[-1].text.startswith("Вправа 1/")
 
@@ -246,6 +340,7 @@ async def test_user_completes_onboarding_and_reaches_first_exercise(tmp_path: Pa
         await send_text("/continue")
         assert "Навчання призупинено" in session.messages[-1].text
         await send_text("/resume")
+        await send_text("/cancel")
         await send_text("/settings")
         await click("settings:retest")
         assert (await database.get_user(student.id))["state"] == "placement"
@@ -384,6 +479,159 @@ async def test_exam_withholds_answers_until_completion_and_persists_results(
 
 
 @pytest.mark.asyncio
+async def test_navigation_tenses_difficult_words_and_levelled_video_catalog(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "navigation.sqlite3")
+    await database.initialize()
+    content_path = Path(__file__).resolve().parents[1] / "content" / "courses.json"
+    courses = [
+        validate_course(course)
+        for course in json.loads(content_path.read_text(encoding="utf-8"))
+    ]
+    await database.seed_courses(courses)
+    await database.create_user(789)
+    await database.update_user(
+        789,
+        privacy_accepted=1,
+        course_id="english_general",
+        level="A1",
+    )
+    await database.record_learning_mistake(
+        789,
+        item="apple",
+        attempted_answer="pear",
+        correct_answer="apple",
+        accepted_answers=["apple"],
+        translation="яблуко",
+        example="I ate an apple.",
+        topic="Їжа",
+        level="A1",
+        explanation="Apple означає «яблуко».",
+    )
+
+    session = MemorySession()
+    token = "123456:" + "D" * 35
+    bot = Bot(token, session=session)
+    dispatcher = Dispatcher()
+    settings = Settings(
+        bot_token=token,
+        allowed_user_ids=frozenset(),
+        moderator_ids=frozenset(),
+        support_admin_ids=frozenset(),
+        database_path=tmp_path / "navigation.sqlite3",
+        log_path=tmp_path / "bot.log",
+        inactive_profile_months=12,
+        technical_log_retention_days=30,
+        vocabulary_pass_threshold=0.7,
+        reminder_poll_seconds=30,
+    )
+    register_handlers(dispatcher, database, settings)
+    student = User(id=789, is_bot=False, first_name="Student")
+    chat = Chat(id=789, type="private")
+    update_id = 1
+
+    async def send_text(text: str) -> None:
+        nonlocal update_id
+        message = Message(
+            message_id=update_id,
+            date=datetime.now(UTC),
+            chat=chat,
+            from_user=student,
+            text=text,
+        )
+        await dispatcher.feed_update(bot, Update(update_id=update_id, message=message))
+        update_id += 1
+
+    async def click(data: str) -> None:
+        nonlocal update_id
+        query = CallbackQuery(
+            id=f"callback-{update_id}",
+            from_user=student,
+            chat_instance="local-test",
+            message=session.messages[-1],
+            data=data,
+        )
+        await dispatcher.feed_update(bot, Update(update_id=update_id, callback_query=query))
+        update_id += 1
+
+    try:
+        await send_text("🕒 Вивчати часи")
+        assert "Курс англійських часів" in session.messages[-1].text
+        assert (await database.get_user(789))["state"] is None
+        await click("tense:lesson:present-simple")
+        assert "Ствердження:" in session.messages[-1].text
+        assert "She works in a school." in session.messages[-1].text
+        assert (await database.get_user(789))["state"] is None
+
+        await click("tense:start:present-simple")
+        user = await database.get_user(789)
+        state = json.loads(user["state_data_json"])
+        assert user["state"] == "tense_practice"
+        first_question = state["question_index"]
+        correct_option = next(
+            index
+            for index, option in enumerate(
+                json.loads(
+                    (Path(__file__).resolve().parents[1] / "content" / "english_tenses.json")
+                    .read_text(encoding="utf-8")
+                )[0]["exercises"][0]["options"]
+            )
+            if option
+            == json.loads(
+                (Path(__file__).resolve().parents[1] / "content" / "english_tenses.json")
+                .read_text(encoding="utf-8")
+            )[0]["exercises"][0]["answer"]
+        )
+        await click(f"tense:answer:present-simple:{first_question}:{correct_option}")
+        state = json.loads((await database.get_user(789))["state_data_json"])
+        assert state["question_index"] == 1
+        await click(f"tense:answer:present-simple:{first_question}:{correct_option}")
+        tense_attempts = await database.tense_progress(789)
+        assert tense_attempts[0]["attempts"] == 1
+
+        second_exercise = json.loads(
+            (Path(__file__).resolve().parents[1] / "content" / "english_tenses.json")
+            .read_text(encoding="utf-8")
+        )[0]["exercises"][1]
+        await send_text(second_exercise["answer"])
+        assert (await database.get_user(789))["state"] is None
+        tense_attempts = await database.tense_progress(789)
+        assert tense_attempts[0]["attempts"] == 2
+        assert tense_attempts[0]["correct"] == 2
+        assert tense_attempts[0]["completed_at"]
+
+        await send_text("🧠 Слова, які я плутаю")
+        assert "apple — яблуко" in session.messages[-1].text
+        await click("words:start")
+        assert "Перекладіть українською: apple" in session.messages[-1].text
+        await send_text("яблуко")
+        assert (await database.get_user(789))["state"] is None
+        history = await database.learning_mistakes(789, active_only=False)
+        assert history[0]["correct_streak"] == 1
+
+        await send_text("🎥 Відеоуроки")
+        video_button = next(
+            button.callback_data
+            for row in session.messages[-1].reply_markup.inline_keyboard
+            for button in row
+            if button.callback_data.startswith("video:")
+        )
+        assert video_button == "video:a1-daily-routine"
+        await click(video_button)
+        assert "A1 English Listening Practice - Daily Routine" in session.messages[-1].text
+        assert any(
+            button.url == "https://www.youtube.com/watch?v=aQ0w2I0Eb9I"
+            for row in session.messages[-1].reply_markup.inline_keyboard
+            for button in row
+        )
+        await send_text("/where")
+        assert "Де я зараз:" in session.messages[-1].text
+    finally:
+        await bot.session.close()
+
+
+@pytest.mark.asyncio
 async def test_moderator_commands_are_restricted_to_allowlisted_ids(tmp_path: Path) -> None:
     database = Database(tmp_path / "moderation.sqlite3")
     await database.initialize()
@@ -457,6 +705,103 @@ async def test_private_allowlist_blocks_non_owner_from_creating_a_profile(tmp_pa
         await dispatcher.feed_update(bot, Update(update_id=1, message=message))
         assert await database.get_user(456) is None
         assert session.messages[-1].text == "Цей бот доступний лише власнику."
+    finally:
+        await bot.session.close()
+
+
+@pytest.mark.asyncio
+async def test_group_and_channel_updates_are_rejected_without_creating_profiles(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "private-chats.sqlite3")
+    await database.initialize()
+    session = MemorySession()
+    token = "123456:" + "E" * 35
+    bot = Bot(token, session=session)
+    dispatcher = Dispatcher()
+    settings = Settings(
+        bot_token=token,
+        allowed_user_ids=frozenset(),
+        moderator_ids=frozenset(),
+        support_admin_ids=frozenset(),
+        database_path=tmp_path / "private-chats.sqlite3",
+        log_path=tmp_path / "bot.log",
+        inactive_profile_months=12,
+        technical_log_retention_days=30,
+        vocabulary_pass_threshold=0.7,
+        reminder_poll_seconds=30,
+    )
+    register_handlers(dispatcher, database, settings)
+    student = User(id=456, is_bot=False, first_name="Student")
+    group = Chat(id=-100123, type="supergroup")
+
+    try:
+        group_command = Message(
+            message_id=1,
+            date=datetime.now(UTC),
+            chat=group,
+            from_user=student,
+            text="/progress",
+        )
+        await dispatcher.feed_update(bot, Update(update_id=1, message=group_command))
+        assert await database.get_user(student.id) is None
+        assert session.messages[-1].text == "LingoPilot працює лише в особистому чаті."
+
+        group_callback_message = Message(
+            message_id=2,
+            date=datetime.now(UTC),
+            chat=group,
+            from_user=User(id=bot.id, is_bot=True, first_name="LingoPilot"),
+            text="Навчання",
+        )
+        group_callback = CallbackQuery(
+            id="group-callback",
+            from_user=student,
+            chat_instance="group",
+            message=group_callback_message,
+            data="nav:home",
+        )
+        await dispatcher.feed_update(
+            bot, Update(update_id=2, callback_query=group_callback)
+        )
+        assert await database.get_user(student.id) is None
+
+        channel = Chat(id=-100456, type="channel", title="Test channel")
+        channel_post = Message(
+            message_id=3,
+            date=datetime.now(UTC),
+            chat=channel,
+            text="/start",
+        )
+        await dispatcher.feed_update(
+            bot, Update(update_id=3, channel_post=channel_post)
+        )
+        assert await database.get_user(student.id) is None
+        assert session.messages[-1].text == "LingoPilot працює лише в особистому чаті."
+    finally:
+        await bot.session.close()
+
+
+@pytest.mark.asyncio
+async def test_bot_commands_are_only_configured_for_private_chats() -> None:
+    token = "123456:" + "F" * 35
+    session = MemorySession()
+    bot = Bot(token, session=session)
+    try:
+        await configure_commands(bot)
+        deleted_scopes = [
+            method.scope.type.value if method.scope else None
+            for method in session.methods
+            if method.__api_method__ == "deleteMyCommands"
+        ]
+        set_commands = next(
+            method
+            for method in session.methods
+            if method.__api_method__ == "setMyCommands"
+        )
+        assert deleted_scopes == [None, "all_group_chats"]
+        assert set_commands.scope.type.value == "all_private_chats"
+        assert any(command.command == "progress" for command in set_commands.commands)
     finally:
         await bot.session.close()
 
@@ -580,9 +925,11 @@ async def test_reference_commands_use_saved_level_and_reveal_practice_answer_aft
         word_response = await send("/word", 1)
         assert "apple" in word_response
         assert "journey" not in word_response and "abstruse" not in word_response
+        assert "https://" not in word_response and "github.com" not in word_response
         grammar_response = await send("/grammar", 2)
         assert "Present simple" in grammar_response
         assert "The journey was long." not in grammar_response
+        assert "https://" not in grammar_response and "github.com" not in grammar_response
 
         assert "перекладіть" in await send("/practice", 3)
         practice_response = await send("яблуко", 4)

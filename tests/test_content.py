@@ -25,6 +25,16 @@ def test_both_demo_directions_are_valid_and_have_prepared_explanations(demo_cour
     assert all(lesson.get("video") is None for course in validated for lesson in course["lessons"])
 
 
+def test_general_and_business_courses_cover_all_cefr_levels(demo_courses: list[dict]) -> None:
+    levels_by_track = {
+        course["track"]: {lesson["level"] for lesson in course["lessons"]}
+        for course in demo_courses
+    }
+
+    assert levels_by_track["general"] == {"A1", "A2", "B1", "B2", "C1", "C2"}
+    assert levels_by_track["business"] == {"A2", "B1", "B2", "C1", "C2"}
+
+
 def test_course_content_accepts_the_full_cefr_range(demo_courses: list[dict]) -> None:
     course = json.loads(json.dumps(demo_courses[0]))
     course["level"] = "C2"

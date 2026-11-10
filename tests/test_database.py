@@ -37,6 +37,12 @@ async def test_profile_progress_persists_and_delete_removes_dependents(
     )
     await db.add_vocabulary(user_id, course["id"], lesson["vocabulary"])
     await db.record_exercise_attempt(user_id, course["id"], lesson["id"], "g-ex1", True)
+    await db.save_exercise_display_order(
+        user_id, course["id"], lesson["id"], "g-ex1", [2, 0, 1]
+    )
+    assert await db.exercise_display_order(
+        user_id, course["id"], lesson["id"], "g-ex1"
+    ) == [2, 0, 1]
     await db.complete_lesson(user_id, course["id"], lesson["id"])
 
     persisted = await db.get_user(user_id)
@@ -56,6 +62,9 @@ async def test_profile_progress_persists_and_delete_removes_dependents(
 
     assert await db.delete_user(user_id)
     assert await db.get_user(user_id) is None
+    assert await db.exercise_display_order(
+        user_id, course["id"], lesson["id"], "g-ex1"
+    ) is None
     assert await db.completed_lessons(user_id, course["id"]) == set()
     async with db._connect() as connection:
         cursor = await connection.execute(
@@ -73,7 +82,7 @@ async def test_open_practice_statistics_mistakes_and_wordbook_are_user_scoped(
     await db.initialize()
     async with db._connect() as connection:
         migration = await connection.execute("SELECT MAX(version) FROM schema_migrations")
-        assert (await migration.fetchone())[0] == 5
+        assert (await migration.fetchone())[0] == 6
         columns = await connection.execute("PRAGMA table_info(open_practice_attempts)")
         assert "topic" in {row["name"] for row in await columns.fetchall()}
     await db.create_user(123456)
@@ -106,6 +115,52 @@ async def test_open_practice_statistics_mistakes_and_wordbook_are_user_scoped(
     assert await db.remove_user_word(123456, "word-1")
     assert await db.user_wordbook(123456) == []
 
+    await db.record_learning_mistake(
+        123456,
+        item="apple",
+        attempted_answer="pear",
+        correct_answer="apple",
+        accepted_answers=["apple"],
+        translation="яблуко",
+        example="I ate an apple.",
+        topic="Food",
+        level="A1",
+        explanation="Apple означає «яблуко».",
+    )
+    await db.record_learning_correct(123456, "apple")
+    first_correct = (await db.learning_mistakes(123456))[0]["last_correct_at"]
+    await db.record_learning_correct(123456, "APPLE")
+    mistake = (await db.learning_mistakes(123456))[0]
+    assert mistake["mistake_count"] == 1
+    assert mistake["correct_streak"] == 1
+    assert mistake["translation"] == "яблуко"
+    assert mistake["last_correct_at"] == first_correct
+    async with db._connect() as connection:
+        await connection.execute(
+            "UPDATE learning_mistakes SET last_correct_at = ? WHERE telegram_id = ?",
+            ((datetime.now(UTC) - timedelta(hours=21)).isoformat(), 123456),
+        )
+        await connection.commit()
+    await db.record_learning_correct(123456, "apple")
+    async with db._connect() as connection:
+        await connection.execute(
+            "UPDATE learning_mistakes SET last_correct_at = ? WHERE telegram_id = ?",
+            ((datetime.now(UTC) - timedelta(hours=21)).isoformat(), 123456),
+        )
+        await connection.commit()
+    await db.record_learning_correct(123456, "apple")
+    assert await db.learning_mistakes(123456, active_only=True) == []
+    assert len(await db.learning_mistakes(123456, active_only=False)) == 1
+    assert await db.clear_learning_mistakes(123456) == 1
+
+    await db.record_tense_answer(123456, "present-simple", True)
+    await db.complete_tense_lesson(123456, "present-simple")
+    tense_row = (await db.tense_progress(123456))[0]
+    assert tense_row["lesson_id"] == "present-simple"
+    assert tense_row["attempts"] == 1
+    assert tense_row["correct"] == 1
+    assert tense_row["completed_at"]
+
 
 @pytest.mark.asyncio
 async def test_existing_open_attempts_table_migrates_topic_column(tmp_path: Path) -> None:
@@ -133,7 +188,7 @@ async def test_existing_open_attempts_table_migrates_topic_column(tmp_path: Path
         columns = await connection.execute("PRAGMA table_info(open_practice_attempts)")
         assert "topic" in {row["name"] for row in await columns.fetchall()}
         version = await connection.execute("SELECT MAX(version) FROM schema_migrations")
-        assert (await version.fetchone())[0] == 5
+        assert (await version.fetchone())[0] == 6
 
 
 @pytest.mark.asyncio

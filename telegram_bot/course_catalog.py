@@ -204,28 +204,23 @@ def build_course_catalog(
             raise ValueError(f"The course for track {track!r} is missing.")
         course = track_courses[track]
         course["placement_test"] = _placement_questions()
-        legacy_prefix = f"demo-{track}-"
-        catalog_prefix = f"catalog-{track}-"
-        course["lessons"] = [
-            lesson
-            for lesson in course["lessons"]
-            if not lesson["id"].startswith((legacy_prefix, catalog_prefix))
-        ]
         existing_words = {
             word["word"].casefold()
             for lesson in course["lessons"]
             for word in lesson["vocabulary"]
         }
         entries: list[tuple[str, str, str, str, str]] = []
-        seen: set[str] = set(existing_words)
+        seen: set[str] = set()
         for category_index, category in enumerate(word_bank.get(track, []), start=1):
             for word, translation, part, level in _category_entries(category):
                 normalized = word.casefold()
                 if normalized in seen:
                     raise ValueError(f"Duplicate vocabulary word {word!r} in the {track} course.")
                 seen.add(normalized)
+                if normalized in existing_words:
+                    continue
                 entries.append((word, translation, part, level, category["title"]))
-        if not entries:
+        if not entries and not course["lessons"]:
             raise ValueError(f"The vocabulary bank for track {track!r} is empty.")
 
         order = max((lesson["order"] for lesson in course["lessons"]), default=0) + 1

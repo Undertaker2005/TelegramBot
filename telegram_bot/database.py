@@ -123,6 +123,15 @@ CREATE TABLE IF NOT EXISTS exercise_attempts (
     was_correct INTEGER NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS exercise_display_orders (
+    telegram_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+    course_id TEXT NOT NULL,
+    lesson_id TEXT NOT NULL,
+    exercise_id TEXT NOT NULL,
+    display_order_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (telegram_id, course_id, lesson_id, exercise_id)
+);
 CREATE TABLE IF NOT EXISTS open_practice_attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     telegram_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
@@ -146,6 +155,37 @@ CREATE TABLE IF NOT EXISTS user_wordbook (
     source_id TEXT NOT NULL,
     added_at TEXT NOT NULL,
     PRIMARY KEY (telegram_id, entry_id)
+);
+CREATE TABLE IF NOT EXISTS learning_mistakes (
+    mistake_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+    item TEXT NOT NULL,
+    item_norm TEXT NOT NULL,
+    attempted_answer TEXT NOT NULL,
+    correct_answer TEXT NOT NULL,
+    accepted_answers_json TEXT NOT NULL,
+    translation TEXT NOT NULL DEFAULT '',
+    example TEXT NOT NULL DEFAULT '',
+    topic TEXT NOT NULL,
+    level TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    mistake_count INTEGER NOT NULL DEFAULT 1,
+    correct_streak INTEGER NOT NULL DEFAULT 0,
+    last_error_at TEXT NOT NULL,
+    last_correct_at TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (telegram_id, item_norm)
+);
+CREATE INDEX IF NOT EXISTS idx_learning_mistakes_active
+    ON learning_mistakes(telegram_id, active, last_error_at DESC);
+CREATE TABLE IF NOT EXISTS tense_progress (
+    telegram_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+    lesson_id TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    correct INTEGER NOT NULL DEFAULT 0,
+    completed_at TEXT,
+    last_activity_at TEXT NOT NULL,
+    PRIMARY KEY (telegram_id, lesson_id)
 );
 CREATE TABLE IF NOT EXISTS notification_log (
     telegram_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
@@ -172,7 +212,7 @@ _USER_COLUMNS = {
     "privacy_accepted", "course_id", "level", "placement_score", "placement_answers_json",
     "placement_version", "placement_at", "minutes_per_day", "timezone", "reminder_time",
     "reminder_days_json", "reminders_enabled", "paused", "state", "state_data_json",
-    "last_active_at",
+    "last_active_at", "last_activity",
 }
 
 
@@ -186,7 +226,7 @@ class Database:
             await db.executescript(_SCHEMA)
             cursor = await db.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations")
             version = int((await cursor.fetchone())[0])
-            if version > 5:
+            if version > 6:
                 raise RuntimeError(f"Database schema version {version} is newer than this application supports.")
             if version == 0:
                 await db.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (1, ?)", (_now(),))
@@ -209,6 +249,12 @@ class Database:
                 if "topic" not in columns:
                     await db.execute("ALTER TABLE open_practice_attempts ADD COLUMN topic TEXT")
                 await db.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (5, ?)", (_now(),))
+            if version < 6:
+                cursor = await db.execute("PRAGMA table_info(users)")
+                columns = {row[1] for row in await cursor.fetchall()}
+                if "last_activity" not in columns:
+                    await db.execute("ALTER TABLE users ADD COLUMN last_activity TEXT")
+                await db.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (6, ?)", (_now(),))
             await db.commit()
 
     @asynccontextmanager
@@ -439,6 +485,44 @@ class Database:
             await _record_study_day(db, telegram_id)
             await db.commit()
 
+    async def exercise_display_order(
+        self, telegram_id: int, course_id: str, lesson_id: str, exercise_id: str
+    ) -> list[int] | None:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT display_order_json FROM exercise_display_orders "
+                "WHERE telegram_id = ? AND course_id = ? AND lesson_id = ? AND exercise_id = ?",
+                (telegram_id, course_id, lesson_id, exercise_id),
+            )
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        try:
+            value = json.loads(row["display_order_json"])
+        except (ValueError, TypeError):
+            return None
+        return value if isinstance(value, list) and all(isinstance(item, int) for item in value) else None
+
+    async def save_exercise_display_order(
+        self,
+        telegram_id: int,
+        course_id: str,
+        lesson_id: str,
+        exercise_id: str,
+        display_order: list[int],
+    ) -> None:
+        async with self._connect() as db:
+            await db.execute(
+                "INSERT INTO exercise_display_orders "
+                "(telegram_id, course_id, lesson_id, exercise_id, display_order_json, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(telegram_id, course_id, lesson_id, exercise_id) DO UPDATE SET "
+                "display_order_json = excluded.display_order_json, updated_at = excluded.updated_at",
+                (telegram_id, course_id, lesson_id, exercise_id,
+                 json.dumps(display_order), _now()),
+            )
+            await db.commit()
+
     async def record_open_practice_attempt(
         self,
         telegram_id: int,
@@ -461,6 +545,150 @@ class Database:
             )
             await _record_study_day(db, telegram_id)
             await db.commit()
+
+    async def record_learning_mistake(
+        self,
+        telegram_id: int,
+        *,
+        item: str,
+        attempted_answer: str,
+        correct_answer: str,
+        accepted_answers: list[str],
+        translation: str = "",
+        example: str = "",
+        topic: str,
+        level: str,
+        explanation: str,
+    ) -> None:
+        normalized = " ".join(item.casefold().split())
+        if not normalized:
+            raise ValueError("A learning mistake must identify the missed item.")
+        values = (
+            item[:160],
+            normalized[:160],
+            attempted_answer[:160],
+            correct_answer[:300],
+            json.dumps(accepted_answers[:10], ensure_ascii=False),
+            translation[:300],
+            example[:500],
+            topic[:160],
+            level[:8],
+            explanation[:500],
+            _now(),
+        )
+        async with self._connect() as db:
+            await db.execute(
+                "INSERT INTO learning_mistakes "
+                "(telegram_id, item, item_norm, attempted_answer, correct_answer, "
+                "accepted_answers_json, translation, example, topic, level, explanation, last_error_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(telegram_id, item_norm) DO UPDATE SET "
+                "item = excluded.item, attempted_answer = excluded.attempted_answer, "
+                "correct_answer = excluded.correct_answer, "
+                "accepted_answers_json = excluded.accepted_answers_json, "
+                "translation = excluded.translation, example = excluded.example, "
+                "topic = excluded.topic, level = excluded.level, explanation = excluded.explanation, "
+                "mistake_count = learning_mistakes.mistake_count + 1, correct_streak = 0, "
+                "last_correct_at = NULL, "
+                "last_error_at = excluded.last_error_at, active = 1",
+                (telegram_id, *values),
+            )
+            await db.commit()
+
+    async def record_learning_correct(self, telegram_id: int, item: str) -> None:
+        normalized = " ".join(item.casefold().split())[:160]
+        now = datetime.now(UTC)
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT correct_streak, last_correct_at FROM learning_mistakes "
+                "WHERE telegram_id = ? AND item_norm = ? AND active = 1",
+                (telegram_id, normalized),
+            )
+            row = await cursor.fetchone()
+            if row:
+                last_correct = (
+                    datetime.fromisoformat(row["last_correct_at"])
+                    if row["last_correct_at"]
+                    else None
+                )
+                separated = last_correct is None or now - last_correct >= timedelta(hours=20)
+                streak = int(row["correct_streak"]) + int(separated)
+                await db.execute(
+                    "UPDATE learning_mistakes SET correct_streak = ?, "
+                    "last_correct_at = CASE WHEN ? THEN ? ELSE last_correct_at END, "
+                    "active = ? WHERE telegram_id = ? AND item_norm = ?",
+                    (
+                        streak,
+                        int(separated),
+                        now.isoformat(),
+                        int(streak < 3),
+                        telegram_id,
+                        normalized,
+                    ),
+                )
+                await db.commit()
+
+    async def learning_mistakes(
+        self, telegram_id: int, *, active_only: bool = True, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT item, attempted_answer, correct_answer, accepted_answers_json, topic, "
+                "translation, example, level, explanation, mistake_count, correct_streak, last_error_at, "
+                "last_correct_at, active FROM learning_mistakes WHERE telegram_id = ? "
+                + ("AND active = 1 " if active_only else "")
+                + "ORDER BY active DESC, last_error_at DESC LIMIT ?",
+                (telegram_id, limit),
+            )
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def clear_learning_mistakes(self, telegram_id: int) -> int:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "DELETE FROM learning_mistakes WHERE telegram_id = ?", (telegram_id,)
+            )
+            await db.commit()
+        return cursor.rowcount
+
+    async def record_tense_answer(
+        self, telegram_id: int, lesson_id: str, correct: bool
+    ) -> None:
+        now = _now()
+        async with self._connect() as db:
+            await db.execute(
+                "INSERT INTO tense_progress (telegram_id, lesson_id, attempts, correct, last_activity_at) "
+                "VALUES (?, ?, 1, ?, ?) "
+                "ON CONFLICT(telegram_id, lesson_id) DO UPDATE SET "
+                "attempts = tense_progress.attempts + 1, "
+                "correct = tense_progress.correct + excluded.correct, "
+                "last_activity_at = excluded.last_activity_at",
+                (telegram_id, lesson_id, int(correct), now),
+            )
+            await _record_study_day(db, telegram_id)
+            await db.commit()
+
+    async def complete_tense_lesson(self, telegram_id: int, lesson_id: str) -> None:
+        async with self._connect() as db:
+            await db.execute(
+                "INSERT INTO tense_progress "
+                "(telegram_id, lesson_id, attempts, correct, completed_at, last_activity_at) "
+                "VALUES (?, ?, 0, 0, ?, ?) "
+                "ON CONFLICT(telegram_id, lesson_id) DO UPDATE SET "
+                "completed_at = excluded.completed_at, last_activity_at = excluded.last_activity_at",
+                (telegram_id, lesson_id, _now(), _now()),
+            )
+            await db.commit()
+
+    async def tense_progress(self, telegram_id: int) -> list[dict[str, Any]]:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT lesson_id, attempts, correct, completed_at, last_activity_at "
+                "FROM tense_progress WHERE telegram_id = ? ORDER BY last_activity_at DESC",
+                (telegram_id,),
+            )
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
     async def open_practice_summary(self, telegram_id: int) -> dict[str, Any]:
         async with self._connect() as db:

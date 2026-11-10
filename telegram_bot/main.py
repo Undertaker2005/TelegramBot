@@ -238,7 +238,10 @@ def run() -> None:
         if args.inspect_content_db is not None:
             asyncio.run(_inspect_content_database(Path(args.inspect_content_db)))
             return
-        asyncio.run(_run(settings))
+        try:
+            asyncio.run(_run(settings))
+        except KeyboardInterrupt:
+            logger.info("Bot stopped by user.")
 
 
 if __name__ == "__main__":

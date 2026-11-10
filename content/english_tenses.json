@@ -1,0 +1,259 @@
+[
+  {
+    "id": "present-simple",
+    "title": "Present Simple",
+    "levels": ["A1", "A2"],
+    "use": "Звички, регулярні дії, факти й розклади.",
+    "forms": {
+      "affirmative": "I/you/we/they + V; he/she/it + V-s/-es",
+      "negative": "I/you/we/they + do not + V; he/she/it + does not + V",
+      "question": "Do + I/you/we/they + V? Does + he/she/it + V?"
+    },
+    "examples": [
+      {"en": "She works in a school.", "uk": "Вона працює у школі."},
+      {"en": "Do they live here?", "uk": "Вони живуть тут?"}
+    ],
+    "markers": ["always", "usually", "often", "every day"],
+    "comparison": "На відміну від Present Continuous, описує звичку або факт, а не дію саме зараз.",
+    "mistakes": ["Після does у запереченні та питанні дієслово без -s: Does she work?"],
+    "exercises": [
+      {
+        "prompt": "He usually ____ breakfast at seven.",
+        "options": ["has", "have", "is having"],
+        "answer": "has",
+        "explanation": "З he у Present Simple додаємо -s; have змінюється на has."
+      },
+      {
+        "prompt": "Оберіть заперечення: They ____ work on Sundays.",
+        "options": ["don't", "doesn't", "aren't"],
+        "answer": "don't",
+        "explanation": "З they використовуємо do not (don't) + початкову форму дієслова."
+      }
+    ]
+  },
+  {
+    "id": "present-continuous",
+    "title": "Present Continuous",
+    "levels": ["A1", "A2", "B1"],
+    "use": "Дія відбувається зараз або тимчасово; також домовленість на близьке майбутнє.",
+    "forms": {
+      "affirmative": "Підмет + am/is/are + V-ing",
+      "negative": "Підмет + am/is/are not + V-ing",
+      "question": "Am/Is/Are + підмет + V-ing?"
+    },
+    "examples": [
+      {"en": "I am reading now.", "uk": "Я зараз читаю."},
+      {"en": "Are you working today?", "uk": "Ти сьогодні працюєш?"}
+    ],
+    "markers": ["now", "at the moment", "today", "this week"],
+    "comparison": "Present Simple — звичка; Present Continuous — дія зараз або тимчасова ситуація.",
+    "mistakes": ["Не пропускайте be: I am studying, а не I studying."],
+    "exercises": [
+      {
+        "prompt": "Listen! The baby ____.",
+        "options": ["is crying", "cries", "cry"],
+        "answer": "is crying",
+        "explanation": "Listen! указує на дію в момент мовлення: is + crying."
+      },
+      {
+        "prompt": "Оберіть правильне запитання: ____ they waiting outside?",
+        "options": ["Are", "Do", "Is"],
+        "answer": "Are",
+        "explanation": "З they у Present Continuous використовуємо are перед підметом."
+      }
+    ]
+  },
+  {
+    "id": "past-simple",
+    "title": "Past Simple",
+    "levels": ["A2", "B1"],
+    "use": "Завершена дія в конкретний момент або період у минулому.",
+    "forms": {
+      "affirmative": "Підмет + V-ed або друга форма неправильного дієслова",
+      "negative": "Підмет + did not + V",
+      "question": "Did + підмет + V?"
+    },
+    "examples": [
+      {"en": "We visited Lviv last year.", "uk": "Ми відвідали Львів торік."},
+      {"en": "Did she call you?", "uk": "Вона тобі телефонувала?"}
+    ],
+    "markers": ["yesterday", "last week", "in 2020", "two days ago"],
+    "comparison": "Past Continuous показує процес у минулому; Past Simple — завершену подію.",
+    "mistakes": ["Після did/didn't дієслово має початкову форму: Did you go?, не Did you went?"],
+    "exercises": [
+      {
+        "prompt": "They ____ the museum yesterday.",
+        "options": ["visited", "visit", "have visited"],
+        "answer": "visited",
+        "explanation": "Yesterday позначає завершений час у минулому, тому вживаємо Past Simple."
+      },
+      {
+        "prompt": "She didn't ____ the message.",
+        "options": ["see", "saw", "seen"],
+        "answer": "see",
+        "explanation": "Після didn't потрібна початкова форма дієслова."
+      }
+    ]
+  },
+  {
+    "id": "past-continuous",
+    "title": "Past Continuous",
+    "levels": ["B1", "B2"],
+    "use": "Процес у певний момент минулого або тривала дія, перервана коротшою подією.",
+    "forms": {
+      "affirmative": "Підмет + was/were + V-ing",
+      "negative": "Підмет + was/were not + V-ing",
+      "question": "Was/Were + підмет + V-ing?"
+    },
+    "examples": [
+      {"en": "I was cooking at six.", "uk": "О шостій я готував(-ла)."},
+      {"en": "They were walking when it started to rain.", "uk": "Вони гуляли, коли почався дощ."}
+    ],
+    "markers": ["at five yesterday", "while", "when"],
+    "comparison": "У сполученні when коротша подія часто стоїть у Past Simple, а тривалий фон — у Past Continuous.",
+    "mistakes": ["З I/he/she/it вживаємо was; з you/we/they — were."],
+    "exercises": [
+      {
+        "prompt": "At 9 p.m. yesterday, we ____ a film.",
+        "options": ["were watching", "watched", "are watching"],
+        "answer": "were watching",
+        "explanation": "Описуємо процес у конкретний момент минулого."
+      },
+      {
+        "prompt": "I ____ when the phone rang.",
+        "options": ["was sleeping", "slept", "am sleeping"],
+        "answer": "was sleeping",
+        "explanation": "Тривалий фон — was sleeping; коротка подія — rang."
+      }
+    ]
+  },
+  {
+    "id": "future-forms",
+    "title": "Майбутнє: will, going to та Present Continuous",
+    "levels": ["A2", "B1", "B2"],
+    "use": "Will — спонтанне рішення, обіцянка або прогноз; going to — намір чи очевидний прогноз; Present Continuous — домовленість.",
+    "forms": {
+      "affirmative": "will + V; am/is/are going to + V; am/is/are + V-ing",
+      "negative": "will not + V; am/is/are not going to + V",
+      "question": "Will + підмет + V? Am/Is/Are + підмет + going to + V?"
+    },
+    "examples": [
+      {"en": "I'll help you.", "uk": "Я тобі допоможу."},
+      {"en": "Look at those clouds! It's going to rain.", "uk": "Поглянь на хмари! Зараз піде дощ."},
+      {"en": "We're meeting Anna at six.", "uk": "Ми зустрічаємося з Анною о шостій."}
+    ],
+    "markers": ["tomorrow", "next week", "soon", "Look!"],
+    "comparison": "Обирайте форму за змістом: рішення зараз, попередній намір чи домовлений план.",
+    "mistakes": ["Після will не додаємо to: will go, не will to go."],
+    "exercises": [
+      {
+        "prompt": "The phone is ringing. I ____ answer it.",
+        "options": ["will", "am going to", "was"],
+        "answer": "will",
+        "explanation": "Це спонтанне рішення, прийняте в момент мовлення."
+      },
+      {
+        "prompt": "We bought the tickets. We ____ travel on Friday.",
+        "options": ["are going to", "will to", "were"],
+        "answer": "are going to",
+        "explanation": "Квитки вказують на попередній намір або план."
+      }
+    ]
+  },
+  {
+    "id": "present-perfect",
+    "title": "Present Perfect",
+    "levels": ["B1", "B2"],
+    "use": "Минула дія має результат зараз, досвід до тепер або період, що ще триває.",
+    "forms": {
+      "affirmative": "Підмет + have/has + V3",
+      "negative": "Підмет + have/has not + V3",
+      "question": "Have/Has + підмет + V3?"
+    },
+    "examples": [
+      {"en": "I have lost my keys.", "uk": "Я загубив(-ла) ключі (і зараз їх не маю)."},
+      {"en": "Have you ever been to Spain?", "uk": "Ти коли-небудь бував(-ла) в Іспанії?"}
+    ],
+    "markers": ["ever", "never", "already", "yet", "just", "since", "for"],
+    "comparison": "Past Simple зазвичай називає завершений минулий час; Present Perfect пов'язує подію з теперішнім.",
+    "mistakes": ["Не поєднуйте Present Perfect із завершеним часом yesterday: скажіть I saw it yesterday."],
+    "exercises": [
+      {
+        "prompt": "She ____ already finished her homework.",
+        "options": ["has", "have", "did"],
+        "answer": "has",
+        "explanation": "З she використовуємо has + третю форму дієслова."
+      },
+      {
+        "prompt": "I ____ this book yet.",
+        "options": ["haven't read", "didn't read", "don't read"],
+        "answer": "haven't read",
+        "explanation": "Yet у запереченні часто вживається з Present Perfect."
+      }
+    ]
+  },
+  {
+    "id": "present-perfect-continuous",
+    "title": "Present Perfect Continuous",
+    "levels": ["B2", "C1"],
+    "use": "Дія почалася раніше й триває досі або щойно завершилася, важлива її тривалість чи процес.",
+    "forms": {
+      "affirmative": "Підмет + have/has been + V-ing",
+      "negative": "Підмет + have/has not been + V-ing",
+      "question": "Have/Has + підмет + been + V-ing?"
+    },
+    "examples": [
+      {"en": "They have been waiting for an hour.", "uk": "Вони чекають уже годину."},
+      {"en": "Have you been working all morning?", "uk": "Ти працюєш увесь ранок?"}
+    ],
+    "markers": ["for", "since", "all day", "lately", "recently"],
+    "comparison": "Present Perfect часто підкреслює результат; Present Perfect Continuous — тривалість або процес.",
+    "mistakes": ["Дієслова стану, як-от know, зазвичай не вживаються в Continuous."],
+    "exercises": [
+      {
+        "prompt": "It ____ raining since noon.",
+        "options": ["has been", "is", "was"],
+        "answer": "has been",
+        "explanation": "Since noon задає початок дії, яка триває; потрібна форма has been raining."
+      },
+      {
+        "prompt": "How long ____ you been learning English?",
+        "options": ["have", "are", "did"],
+        "answer": "have",
+        "explanation": "У питанні Present Perfect Continuous: have + підмет + been + V-ing."
+      }
+    ]
+  },
+  {
+    "id": "past-perfect",
+    "title": "Past Perfect",
+    "levels": ["B2", "C1", "C2"],
+    "use": "Дія завершилася до іншої події або моменту в минулому.",
+    "forms": {
+      "affirmative": "Підмет + had + V3",
+      "negative": "Підмет + had not + V3",
+      "question": "Had + підмет + V3?"
+    },
+    "examples": [
+      {"en": "The train had left before we arrived.", "uk": "Потяг вирушив до того, як ми прибули."},
+      {"en": "Had she seen the film before?", "uk": "Вона вже бачила цей фільм раніше?"}
+    ],
+    "markers": ["before", "after", "by the time", "already"],
+    "comparison": "Past Perfect позначає ранішу з двох минулих подій; для простої послідовності часто достатньо Past Simple.",
+    "mistakes": ["Had однакове для всіх осіб; після нього потрібна третя форма дієслова."],
+    "exercises": [
+      {
+        "prompt": "By the time I called, they ____ home.",
+        "options": ["had gone", "went", "have gone"],
+        "answer": "had gone",
+        "explanation": "Від'їзд стався раніше за дзвінок, тому вживаємо Past Perfect."
+      },
+      {
+        "prompt": "He hadn't ____ the report before the meeting.",
+        "options": ["finished", "finish", "finishes"],
+        "answer": "finished",
+        "explanation": "Після hadn't потрібна третя форма дієслова."
+      }
+    ]
+  }
+]

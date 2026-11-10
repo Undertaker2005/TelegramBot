@@ -1,0 +1,62 @@
+[
+  {
+    "id": "a1-daily-routine",
+    "title": "A1 English Listening Practice - Daily Routine",
+    "channel": "Listening Time",
+    "url": "https://www.youtube.com/watch?v=aQ0w2I0Eb9I",
+    "level": "A1",
+    "topic": "Мій звичайний день",
+    "language": "Англійська",
+    "checked_on": "2026-11-08"
+  },
+  {
+    "id": "a2-travel",
+    "title": "A2 English Listening Practice - Travel",
+    "channel": "Listening Time",
+    "url": "https://www.youtube.com/watch?v=gOMypAhVaXE",
+    "level": "A2",
+    "topic": "Подорожі містом",
+    "language": "Англійська",
+    "checked_on": "2026-11-08"
+  },
+  {
+    "id": "b1-universities",
+    "title": "B1 English Listening Practice - American Universities",
+    "channel": "Listening Time",
+    "url": "https://www.youtube.com/watch?v=tnvj7e1n5xk",
+    "level": "B1",
+    "topic": "Навчання й університетське життя",
+    "language": "Англійська",
+    "checked_on": "2026-11-08"
+  },
+  {
+    "id": "b2-listening",
+    "title": "1-Hour B2 English Listening Practice",
+    "channel": "Learn English Lab",
+    "url": "https://www.youtube.com/watch?v=kjNYNPqDSlQ",
+    "level": "B2",
+    "topic": "Аудіювання: розуміння складних розмов",
+    "language": "Англійська",
+    "checked_on": "2026-11-08"
+  },
+  {
+    "id": "c1-social-media",
+    "title": "Real Teachers! B2 C1 English Listening Practice: Social Media",
+    "channel": "High Level Listening Advanced English Podcast",
+    "url": "https://www.youtube.com/watch?v=00acVteNnmY",
+    "level": "C1",
+    "topic": "Соціальні мережі та медіаграмотність",
+    "language": "Англійська",
+    "checked_on": "2026-11-08"
+  },
+  {
+    "id": "c2-intellectual-debate",
+    "title": "C2 Advanced English Listening Practice | The Unwritten Rules of Intellectual Debate",
+    "channel": "Learning English Podcast 2",
+    "url": "https://www.youtube.com/watch?v=E-ddiPJlS8Q",
+    "level": "C2",
+    "topic": "Ввічлива незгода та інтелектуальна дискусія",
+    "language": "Англійська",
+    "checked_on": "2026-11-08"
+  }
+]

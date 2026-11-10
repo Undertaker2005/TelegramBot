@@ -17,6 +17,8 @@ from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     BotCommand,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -41,13 +43,15 @@ from telegram_bot.logic import (
 )
 from telegram_bot.open_dataset import OpenDataset, normalize_lookup
 from telegram_bot.reference_data import CEFR_LEVELS, ReferenceLibrary
+from telegram_bot.tense_course import load_tense_course
+from telegram_bot.video_catalog import load_video_catalog
 
 logger = logging.getLogger(__name__)
 MAIN_MENU = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="Продовжити урок"), KeyboardButton(text="Повторити слова")],
-        [KeyboardButton(text="Мій прогрес"), KeyboardButton(text="Мій план")],
-        [KeyboardButton(text="Налаштування")],
+        [KeyboardButton(text="📚 Навчання"), KeyboardButton(text="✍️ Практика")],
+        [KeyboardButton(text="📊 Прогрес"), KeyboardButton(text="👤 Профіль")],
+        [KeyboardButton(text="⚙️ Налаштування")],
     ],
     resize_keyboard=True,
 )
@@ -128,7 +132,10 @@ def _normalize_exercise_answer(value: str) -> str:
 
 
 def _shuffled_option_order(
-    options: list[str], correct_index: int, previous_correct_position: int | None = None
+    options: list[str],
+    correct_index: int,
+    previous_correct_position: int | None = None,
+    previous_order: list[int] | None = None,
 ) -> tuple[list[int], int]:
     if not 0 <= correct_index < len(options):
         raise ValueError("Correct option index is outside the options list.")
@@ -139,6 +146,26 @@ def _shuffled_option_order(
         replacement = (correct_position + random.randrange(1, len(order))) % len(order)
         order[correct_position], order[replacement] = order[replacement], order[correct_position]
         correct_position = replacement
+    if len(order) > 1 and order == previous_order:
+        alternatives: list[list[int]] = []
+        for left in range(len(order)):
+            for right in range(left + 1, len(order)):
+                candidate = order.copy()
+                candidate[left], candidate[right] = candidate[right], candidate[left]
+                if candidate == previous_order:
+                    continue
+                if candidate.index(correct_index) != previous_correct_position:
+                    alternatives.append(candidate)
+        if not alternatives:
+            alternatives = []
+            for left in range(len(order)):
+                for right in range(left + 1, len(order)):
+                    candidate = order.copy()
+                    candidate[left], candidate[right] = candidate[right], candidate[left]
+                    if candidate != previous_order:
+                        alternatives.append(candidate)
+        order = random.choice(alternatives)
+        correct_position = order.index(correct_index)
     return order, correct_position
 
 
@@ -161,8 +188,24 @@ async def _show_home(message: Message, db: Database) -> None:
     if not user or not user["privacy_accepted"]:
         await message.answer("Щоб продовжити, запустіть /start і підтвердьте повідомлення про приватність.")
         return
+    active_labels = {
+        "exercise": "вправа у вбудованому уроці",
+        "review": "повторення слів",
+        "review_result": "результат повторення слів",
+        "open_practice": "відкрита практика або іспитовий блок",
+        "reference_practice": "вправа на слово",
+        "tense_practice": "урок англійських часів",
+        "difficult_practice": "повторення складних слів",
+        "placement": "тест визначення рівня",
+        "placement_result": "результат визначення рівня",
+    }
+    active = active_labels.get(user.get("state"))
+    last_activity = user.get("last_activity")
     await message.answer(
-        "Головне меню. Оберіть наступний крок або скористайтеся командами /help, /progress чи /settings.",
+        "Головне меню · оберіть розділ.\n"
+        + (f"Активне заняття: {active}. /continue — продовжити, /cancel — завершити.\n"
+           if active else "Активного заняття немає.\n")
+        + (f"Останній розділ: {last_activity}." if last_activity else ""),
         reply_markup=MAIN_MENU,
     )
 
@@ -259,6 +302,9 @@ async def _begin_exercise(
             display_order = previous_data["display_order"]
             correct_position = display_order.index(correct_index)
         else:
+            previous_order = await db.exercise_display_order(
+                telegram_id, course["id"], lesson["id"], exercise["id"]
+            )
             previous_position = (
                 previous_data.get("correct_position")
                 if previous_data.get("course_id") == course["id"]
@@ -267,7 +313,10 @@ async def _begin_exercise(
                 else None
             )
             display_order, correct_position = _shuffled_option_order(
-                options, correct_index, previous_position
+                options, correct_index, previous_position, previous_order
+            )
+            await db.save_exercise_display_order(
+                telegram_id, course["id"], lesson["id"], exercise["id"], display_order
             )
     data = {
         "course_id": course["id"],
@@ -476,8 +525,35 @@ def register_handlers(
     open_dataset = open_dataset or OpenDataset(
         Path(__file__).resolve().parents[1] / "data" / "open_training.sqlite3"
     )
+    content_dir = Path(__file__).resolve().parents[1] / "content"
+    try:
+        tense_lessons = load_tense_course(content_dir / "english_tenses.json")
+        tense_catalog_error = False
+    except ValueError:
+        logger.exception("Could not load the English tense course.")
+        tense_lessons = []
+        tense_catalog_error = True
+    try:
+        video_catalog = load_video_catalog(content_dir / "youtube_videos.json")
+        video_catalog_error = False
+    except ValueError:
+        logger.exception("Could not load the verified YouTube catalog.")
+        video_catalog = []
+        video_catalog_error = True
 
     async def restrict_to_allowed_users(handler: Any, event: Message | CallbackQuery, data: dict[str, Any]) -> Any:
+        if isinstance(event, Message) and event.chat.type != ChatType.PRIVATE:
+            await event.answer("LingoPilot працює лише в особистому чаті.")
+            return None
+        if isinstance(event, CallbackQuery) and (
+            event.message is None
+            or event.message.chat.type != ChatType.PRIVATE
+        ):
+            await event.answer(
+                "LingoPilot працює лише в особистому чаті.",
+                show_alert=True,
+            )
+            return None
         if settings.allowed_user_ids and event.from_user.id not in settings.allowed_user_ids:
             if isinstance(event, Message):
                 await event.answer("Цей бот доступний лише власнику.")
@@ -867,13 +943,9 @@ def register_handlers(
     router.message.outer_middleware(restrict_to_allowed_users)
     router.callback_query.outer_middleware(restrict_to_allowed_users)
 
-    @router.message(F.chat.type != ChatType.PRIVATE)
-    async def reject_group_message(message: Message) -> None:
-        await message.answer("Бот працює лише в особистому чаті.")
-
-    @router.callback_query(F.message.chat.type != ChatType.PRIVATE)
-    async def reject_group_callback(callback: CallbackQuery) -> None:
-        await callback.answer("Бот працює лише в особистому чаті.", show_alert=True)
+    @router.channel_post()
+    async def reject_channel_post(message: Message) -> None:
+        await message.answer("LingoPilot працює лише в особистому чаті.")
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
@@ -1290,7 +1362,13 @@ def register_handlers(
                 unique.setdefault(key, task)
         return list(unique.values())
 
-    async def send_topics(message: Message, telegram_id: int) -> None:
+    async def send_topics(
+        message: Message,
+        telegram_id: int,
+        *,
+        completed_only: bool = False,
+        new_only: bool = False,
+    ) -> None:
         user = await _touch(db, telegram_id)
         if not user or not user["privacy_accepted"]:
             await message.answer("Спершу запустіть /start і підтвердьте повідомлення про приватність.")
@@ -1302,25 +1380,1035 @@ def register_handlers(
         if not course:
             await _send_courses(message, db)
             return
-        topics = topics_for_level(course, user["level"])
+        completed = await db.completed_lessons(telegram_id, course["id"])
+        selected_lessons = [
+            item
+            for item in course["lessons"]
+            if item["level"] == user["level"]
+            and (not completed_only or item["id"] in completed)
+            and (not new_only or item["id"] not in completed)
+        ]
+        topics = topics_for_level({"lessons": selected_lessons}, user["level"])
         if not topics:
             await message.answer(
-                f"У курсі «{course['title']}» поки немає опублікованих уроків рівня {user['level']}. "
-                "Не підміняю їх матеріалами іншого рівня. Спробуйте /open_practice або змініть рівень через /level."
+                (
+                    "Ще немає завершених уроків для повторення."
+                    if completed_only
+                    else f"Нових уроків рівня {user['level']} поки немає. "
+                    "Перейдіть до повторення або виберіть тему в каталозі."
+                    if new_only
+                    else f"У курсі «{course['title']}» поки немає опублікованих уроків рівня {user['level']}. "
+                    "Не підміняю їх матеріалами іншого рівня. Спробуйте /open_practice або змініть рівень через /level."
+                ),
+                reply_markup=_inline([[("🏠 Головне меню", "nav:home")]]),
             )
             return
-        completed = await db.completed_lessons(telegram_id, course["id"])
         rows = []
         for title, lessons in topics:
             done = sum(lesson["id"] in completed for lesson in lessons)
             rows.append(
-                [(f"{title} · уроків {len(lessons)} · завершено {done}", f"topic:{lessons[0]['id']}")]
+                [(
+                    f"{title} · уроків {len(lessons)} · завершено {done}",
+                    f"topic:{'done:' if completed_only else 'new:' if new_only else ''}{lessons[0]['id']}",
+                )]
             )
+        rows.append([("🏠 Головне меню", "nav:home")])
         await message.answer(
-            f"Каталог тем · {user['level']} · {course['title']}\n"
-            "Оберіть тему. Уроки можна проходити у довільному порядку.",
+            f"{'Повторення пройдених тем' if completed_only else 'Новий матеріал' if new_only else 'Каталог тем'} · "
+            f"{user['level']} · {course['title']}\nОберіть тему.",
             reply_markup=_inline(rows),
         )
+
+    async def show_tense_menu(message: Message, telegram_id: int) -> None:
+        user = await _touch(db, telegram_id)
+        if not user or not user["privacy_accepted"]:
+            await message.answer("Спершу запустіть /start.")
+            return
+        level = user.get("level")
+        await db.update_user(telegram_id, last_activity="Часи англійської")
+        if level not in CEFR_LEVELS:
+            await message.answer(
+                "Спершу оберіть рівень у налаштуваннях або командою /level.",
+                reply_markup=_inline([[("⚙️ Налаштування", "nav:settings"), ("🏠 Головне меню", "nav:home")]]),
+            )
+            return
+        if tense_catalog_error or not tense_lessons:
+            await message.answer(
+                "Курс часів недоступний: перевірте content/english_tenses.json та журнал бота.",
+                reply_markup=_inline([[("🏠 Головне меню", "nav:home")]]),
+            )
+            return
+        completed = {
+            item["lesson_id"] for item in await db.tense_progress(telegram_id)
+            if item["completed_at"]
+        }
+        available = [lesson for lesson in tense_lessons if level in lesson["levels"]]
+        rows: list[list[tuple[str, str]]] = [
+            [("▶️ Наступний урок курсу", "tense:next")],
+            [("↔️ Порівняти два часи", "tense:compare_menu")],
+        ]
+        rows.extend(
+            [[(f"{'✅ ' if lesson['id'] in completed else ''}{lesson['title']}", f"tense:lesson:{lesson['id']}")]
+             for lesson in available]
+        )
+        rows.append([("🏠 Головне меню", "nav:home")])
+        await message.answer(
+            f"Курс англійських часів · {level}\n"
+            "Оберіть урок або порівняння. Пояснення відкриється перед вправами.",
+            reply_markup=_inline(rows),
+        )
+
+    async def show_tense_lesson(
+        message: Message, telegram_id: int, lesson_id: str
+    ) -> None:
+        user = await _touch(db, telegram_id)
+        lesson = next((item for item in tense_lessons if item["id"] == lesson_id), None)
+        if not user or not lesson or user.get("level") not in lesson["levels"]:
+            await message.answer(
+                "Цей урок недоступний для вашого рівня.",
+                reply_markup=_inline([[("🕒 До часів", "nav:tenses"), ("🏠 Головне меню", "nav:home")]]),
+            )
+            return
+        lines = [
+            f"{lesson['title']} · рівень {user['level']}",
+            f"Коли вживаємо: {lesson['use']}",
+            "Формули:",
+            f"• Ствердження: {lesson['forms']['affirmative']}",
+            f"• Заперечення: {lesson['forms']['negative']}",
+            f"• Запитання: {lesson['forms']['question']}",
+            "Приклади:",
+            *[f"• {example['en']} — {example['uk']}" for example in lesson["examples"]],
+            f"Маркери й контексти: {', '.join(lesson['markers'])}.",
+            f"Порівняння: {lesson['comparison']}",
+            "Типова помилка: " + " ".join(lesson["mistakes"]),
+        ]
+        await message.answer(
+            "\n".join(lines),
+            reply_markup=_inline([
+                [("Почати вправи", f"tense:start:{lesson_id}")],
+                [("↔️ Порівняти часи", "tense:compare_menu")],
+                [("🕒 До часів", "nav:tenses"), ("🏠 Головне меню", "nav:home")],
+            ]),
+        )
+
+    async def show_video_menu(message: Message, telegram_id: int) -> None:
+        user = await _touch(db, telegram_id)
+        if not user or not user["privacy_accepted"]:
+            await message.answer("Спершу запустіть /start.")
+            return
+        await db.update_user(telegram_id, last_activity="Відеоуроки")
+        if video_catalog_error:
+            await message.answer(
+                "Не вдалося прочитати каталог YouTube. Перевірте content/youtube_videos.json та журнал бота.",
+                reply_markup=_inline([[("🏠 Головне меню", "nav:home")]]),
+            )
+            return
+        if user.get("level") not in CEFR_LEVELS:
+            await message.answer(
+                "Спершу оберіть рівень командою /level.",
+                reply_markup=_inline([[("🏠 Головне меню", "nav:home")]]),
+            )
+            return
+        videos = [item for item in video_catalog if item["level"] == user["level"]]
+        rows = [
+            [(
+                item["title"] if len(item["title"]) <= 64 else item["title"][:61] + "…",
+                f"video:{item['id']}",
+            )]
+            for item in videos
+        ]
+        rows.append([("🏠 Головне меню", "nav:home")])
+        if not videos:
+            await message.answer(
+                f"Для рівня {user['level']} відео поки не додано.",
+                reply_markup=_inline(rows),
+            )
+            return
+        await message.answer(
+            f"Відеоуроки · {user['level']}\nОберіть перевірене відео з каталогу.",
+            reply_markup=_inline(rows),
+        )
+
+    async def show_tense_question(
+        message: Message, telegram_id: int, state: dict[str, Any]
+    ) -> None:
+        lesson = next(
+            (item for item in tense_lessons if item["id"] == state.get("lesson_id")),
+            None,
+        )
+        if not lesson:
+            await db.set_state(telegram_id, None)
+            await message.answer("Урок часів більше недоступний; заняття зупинено.")
+            return
+        index = state.get("question_index", 0)
+        if not isinstance(index, int) or not 0 <= index < len(lesson["exercises"]):
+            await db.complete_tense_lesson(telegram_id, lesson["id"])
+            await db.set_state(telegram_id, None)
+            total = state.get("total", 0)
+            correct = state.get("correct", 0)
+            await message.answer(
+                f"Урок «{lesson['title']}» завершено: {correct}/{total} правильних. "
+                "Результат збережено у вашому профілі.",
+                reply_markup=MAIN_MENU,
+            )
+            return
+        exercise = lesson["exercises"][index]
+        if state.get("display_question_index") == index:
+            display_order = state.get("display_order", list(range(len(exercise["options"]))))
+        else:
+            display_order, correct_position = _shuffled_option_order(
+                exercise["options"], exercise["options"].index(exercise["answer"]),
+                state.get("previous_correct_position"),
+            )
+            state["display_order"] = display_order
+            state["display_question_index"] = index
+            state["previous_correct_position"] = correct_position
+        await db.set_state(telegram_id, "tense_practice", state)
+        rows = [
+            [
+                (str(position + 1), f"tense:answer:{lesson['id']}:{index}:{option_index}")
+                for position, option_index in enumerate(display_order[start : start + 3], start)
+            ]
+            for start in range(0, len(display_order), 3)
+        ]
+        rows.extend([
+            [("Пропустити", f"tense:skip:{lesson['id']}:{index}")],
+            [("Завершити заняття", "tense:finish"), ("🏠 Головне меню", "nav:home")],
+        ])
+        await message.answer(
+            f"{lesson['title']} · вправа {index + 1}/{len(lesson['exercises'])}\n"
+            f"{exercise['prompt']}\n\n"
+            + "\n".join(
+                f"{position + 1}. {exercise['options'][option_index]}"
+                for position, option_index in enumerate(display_order)
+            )
+            + "\n\nОберіть варіант кнопкою або надішліть його текстом.",
+            reply_markup=_inline(rows),
+        )
+
+    async def submit_tense_answer(
+        message: Message,
+        telegram_id: int,
+        state: dict[str, Any],
+        answer: str,
+    ) -> None:
+        lesson = next(
+            (item for item in tense_lessons if item["id"] == state.get("lesson_id")),
+            None,
+        )
+        index = state.get("question_index")
+        if not lesson or not isinstance(index, int) or not 0 <= index < len(lesson["exercises"]):
+            await db.set_state(telegram_id, None)
+            await message.answer("Ця вправа застаріла; заняття зупинено.")
+            return
+        exercise = lesson["exercises"][index]
+        candidate = answer.strip()
+        if candidate.isdigit():
+            position = int(candidate) - 1
+            order = state.get("display_order", list(range(len(exercise["options"]))))
+            if 0 <= position < len(order):
+                candidate = exercise["options"][order[position]]
+        correct = _normalize_exercise_answer(candidate) == _normalize_exercise_answer(
+            exercise["answer"]
+        )
+        await db.record_tense_answer(telegram_id, lesson["id"], correct)
+        state["total"] = state.get("total", 0) + 1
+        state["correct"] = state.get("correct", 0) + int(correct)
+        state["question_index"] = index + 1
+        await message.answer(
+            ("Правильно!" if correct else "Не зовсім.")
+            + f"\nВідповідь: {exercise['answer']}\nПояснення: {exercise['explanation']}"
+        )
+        await show_tense_question(message, telegram_id, state)
+
+    async def show_repeat_menu(message: Message, telegram_id: int) -> None:
+        user = await _touch(db, telegram_id)
+        if not user or not user["privacy_accepted"]:
+            await message.answer("Спершу запустіть /start.")
+            return
+        await db.update_user(telegram_id, last_activity="Повторення")
+        await message.answer(
+            "Оберіть, що повторити:",
+            reply_markup=_inline([
+                [("Слова, заплановані до повторення", "nav:repeat_due")],
+                [("Пройдені уроки й теми", "nav:repeat_topics")],
+                [("🧠 Слова, які я плутаю", "nav:difficult")],
+                [("⬅️ До навчання", "nav:learning")],
+                [("🏠 Головне меню", "nav:home")],
+            ]),
+        )
+
+    async def show_learning_menu(message: Message, telegram_id: int) -> None:
+        user = await _touch(db, telegram_id)
+        if not user or not user["privacy_accepted"]:
+            await message.answer("Спершу запустіть /start.")
+            return
+        await db.update_user(telegram_id, last_activity="Навчання")
+        await message.answer(
+            "Навчання · оберіть наступну дію:",
+            reply_markup=_inline([
+                [("📘 Новий матеріал", "nav:new")],
+                [("🔁 Повторити матеріал", "nav:repeat")],
+                [("🧠 Складні слова", "nav:difficult"), ("🕒 Англійські часи", "nav:tenses")],
+                [("🎥 Відеоуроки", "nav:videos")],
+                [("🏠 Головне меню", "nav:home")],
+            ]),
+        )
+
+    async def show_practice_menu(message: Message, telegram_id: int) -> None:
+        user = await _touch(db, telegram_id)
+        if not user or not user["privacy_accepted"]:
+            await message.answer("Спершу запустіть /start.")
+            return
+        await db.update_user(telegram_id, last_activity="Практика")
+        await message.answer(
+            "Оберіть формат і тривалість:",
+            reply_markup=_inline([
+                [("Коротка · 5", "practice:5"), ("Стандартна · 10", "practice:10")],
+                [("Довга · 20", "practice:20"), ("Пробний іспит", "practice:exam")],
+                [("Окрема вправа за рівнем", "practice:reference")],
+                [("🏠 Головне меню", "nav:home")],
+            ]),
+        )
+
+    async def show_difficult_words(message: Message, telegram_id: int) -> None:
+        user = await _touch(db, telegram_id)
+        if not user or not user["privacy_accepted"]:
+            await message.answer("Спершу запустіть /start.")
+            return
+        await db.update_user(telegram_id, last_activity="Складні слова")
+        mistakes = await db.learning_mistakes(telegram_id, active_only=True, limit=20)
+        if not mistakes:
+            await message.answer(
+                "Складних слів поки немає. Помилки з навчальних вправ з'являться тут для повторення.",
+                reply_markup=_inline([
+                    [("📜 Історія складних слів", "words:history")],
+                    [("🏠 Головне меню", "nav:home")],
+                ]),
+            )
+            return
+        lines = [
+            "Активні складні слова:",
+            *[
+                f"• {item['item']}"
+                + (f" — {item['translation']}" if item["translation"] else "")
+                + f" · помилок: {item['mistake_count']} · {item['level']}"
+                for item in mistakes[:15]
+            ],
+        ]
+        await message.answer(
+            "\n".join(lines),
+            reply_markup=_inline([
+                [("Почати повторення", "words:start")],
+                [("📜 Історія складних слів", "words:history")],
+                [("🏠 Головне меню", "nav:home")],
+            ]),
+        )
+
+    async def show_difficult_question(
+        message: Message, telegram_id: int, state: dict[str, Any]
+    ) -> None:
+        tasks = state.get("tasks", [])
+        index = state.get("question_index", 0)
+        if not isinstance(index, int) or not 0 <= index < len(tasks):
+            await db.set_state(telegram_id, None)
+            await message.answer(
+                f"Повторення складних слів завершено: "
+                f"{state.get('correct', 0)}/{state.get('total', 0)} правильних.",
+                reply_markup=MAIN_MENU,
+            )
+            return
+        task = tasks[index]
+        mode = task["mode"]
+        if mode == "en_to_uk":
+            prompt = f"Перекладіть українською: {task['item']}"
+        elif mode == "uk_to_en":
+            prompt = f"Перекладіть англійською: {task['translation']}"
+        elif mode == "fill":
+            prompt = f"Заповніть пропуск словом: {task['sentence']}"
+        else:
+            prompt = f"Оберіть український переклад слова: {task['item']}"
+        rows: list[list[tuple[str, str]]] = []
+        if mode == "choice":
+            choice_answer = re.split(r"\s*[/;]\s*", task["translation"])[0]
+            order, _ = _shuffled_option_order(
+                task["options"], task["options"].index(choice_answer),
+                state.get("previous_correct_position"),
+            )
+            task["display_order"] = order
+            state["previous_correct_position"] = order.index(
+                task["options"].index(choice_answer)
+            )
+            rows.extend(
+                [[
+                    (str(position + 1), f"dw:answer:{index}:{option_index}")
+                    for position, option_index in enumerate(order[start : start + 3], start)
+                ]]
+                for start in range(0, len(order), 3)
+            )
+        state["tasks"] = tasks
+        await db.set_state(telegram_id, "difficult_practice", state)
+        suffix = ""
+        if mode != "choice":
+            suffix = "\nНадішліть відповідь текстом."
+        rows.extend([
+            [("Пропустити", f"dw:skip:{index}")],
+            [("Завершити повторення", "dw:finish"), ("🏠 Головне меню", "nav:home")],
+        ])
+        await message.answer(
+            f"Складні слова · {index + 1}/{len(tasks)}\n{prompt}{suffix}",
+            reply_markup=_inline(rows),
+        )
+
+    async def start_difficult_practice(message: Message, telegram_id: int) -> None:
+        user = await _touch(db, telegram_id)
+        if not user or not user["privacy_accepted"]:
+            await message.answer("Спершу запустіть /start.")
+            return
+        if has_active_learning(user):
+            await message.answer("Спершу завершіть або скасуйте поточне заняття командою /cancel.")
+            return
+        await db.update_user(telegram_id, last_activity="Складні слова")
+        entries = await db.learning_mistakes(telegram_id, active_only=True, limit=50)
+        tasks: list[dict[str, Any]] = []
+        for item in entries:
+            if not item["translation"]:
+                continue
+            translations = list(dict.fromkeys(
+                value.strip()
+                for value in re.split(r"\s*[/;]\s*", item["translation"])
+                if value.strip()
+            ))
+            accepted = json.loads(item["accepted_answers_json"])
+            english_answers = list(dict.fromkeys([item["item"], item["correct_answer"], *accepted]))
+            sentence = item["example"]
+            blank_sentence = re.sub(
+                re.escape(item["item"]), "____", sentence, count=1, flags=re.IGNORECASE
+            ) if sentence else ""
+            modes = ["en_to_uk", "uk_to_en"]
+            if sentence and blank_sentence != sentence:
+                modes.append("fill")
+            choices = list(dict.fromkeys(
+                row["translation"]
+                for row in entries
+                if row["translation"] and row["item"] != item["item"]
+            ))
+            if len(choices) >= 2:
+                modes.append("choice")
+            mode = modes[(item["mistake_count"] + item["correct_streak"] - 1) % len(modes)]
+            translation_options = [translations[0]]
+            if mode == "choice":
+                distractors = [value for value in choices if value != item["translation"]]
+                random.shuffle(distractors)
+                translation_options.extend(distractors[:2])
+            tasks.append({
+                "item": item["item"],
+                "translation": item["translation"],
+                "accepted": english_answers,
+                "mode": mode,
+                "sentence": blank_sentence,
+                "example": sentence,
+                "options": translation_options,
+                "topic": item["topic"],
+                "level": item["level"],
+                "explanation": item["explanation"],
+            })
+        if not tasks:
+            await message.answer(
+                "У журналі немає активних слів із підтвердженим українським перекладом для вправ. "
+                "Нові помилки зі словника курсу з'являться тут автоматично.",
+                reply_markup=_inline([[("🏠 Головне меню", "nav:home")]]),
+            )
+            return
+        state = {"tasks": tasks, "question_index": 0, "total": 0, "correct": 0}
+        await show_difficult_question(message, telegram_id, state)
+
+    async def submit_difficult_answer(
+        message: Message,
+        telegram_id: int,
+        state: dict[str, Any],
+        answer: str,
+    ) -> None:
+        index = state.get("question_index")
+        tasks = state.get("tasks", [])
+        if not isinstance(index, int) or not 0 <= index < len(tasks):
+            await db.set_state(telegram_id, None)
+            await message.answer("Ця вправа застаріла; повторення зупинено.")
+            return
+        task = tasks[index]
+        candidate = answer.strip()
+        if task["mode"] == "choice" and candidate.isdigit():
+            position = int(candidate) - 1
+            order = task.get("display_order", list(range(len(task["options"]))))
+            if 0 <= position < len(order):
+                candidate = task["options"][order[position]]
+        expected = (
+            list(dict.fromkeys(
+                value.strip()
+                for value in re.split(r"\s*[/;]\s*", task["translation"])
+                if value.strip()
+            ))
+            if task["mode"] in {"en_to_uk", "choice"}
+            else task["accepted"]
+        )
+        correct = _normalize_exercise_answer(candidate) in {
+            _normalize_exercise_answer(value) for value in expected if value
+        }
+        if correct:
+            await db.record_learning_correct(telegram_id, task["item"])
+        else:
+            await db.record_learning_mistake(
+                telegram_id,
+                item=task["item"],
+                attempted_answer=candidate,
+                correct_answer=task["accepted"][0],
+                accepted_answers=task["accepted"],
+                translation=task["translation"],
+                example=task.get("example", ""),
+                topic=task["topic"],
+                level=task["level"],
+                explanation=task["explanation"],
+            )
+        state["total"] += 1
+        state["correct"] += int(correct)
+        state["question_index"] = index + 1
+        await message.answer(
+            ("Правильно!" if correct else "Не зовсім.")
+            + f"\nВідповідь: {expected[0]}\nТема: {task['topic']} · {task['level']}"
+            + (f"\nПояснення: {task['explanation']}" if task["explanation"] else "")
+        )
+        await show_difficult_question(message, telegram_id, state)
+
+    async def record_course_mistake(
+        telegram_id: int,
+        course: dict[str, Any],
+        lesson: dict[str, Any],
+        exercise: dict[str, Any],
+        attempted_answer: str,
+    ) -> str:
+        expected = exercise["correct_answer"]
+        normalized_expected = _normalize_exercise_answer(expected)
+        word = next(
+            (
+                item
+                for item in lesson["vocabulary"]
+                if _normalize_exercise_answer(item["word"]) == normalized_expected
+            ),
+            None,
+        )
+        item = word["word"] if word else expected
+        translation = word["translation"] if word else ""
+        example = word["example"] if word else exercise.get("sentence", "")
+        await db.record_learning_mistake(
+            telegram_id,
+            item=item,
+            attempted_answer=attempted_answer or "пропуск",
+            correct_answer=expected,
+            accepted_answers=[expected],
+            translation=translation,
+            example=example,
+            topic=lesson["title"],
+            level=lesson["level"],
+            explanation=exercise.get("explanation", ""),
+        )
+        return item
+
+    async def show_where(message: Message, telegram_id: int) -> None:
+        user = await _touch(db, telegram_id)
+        if not user or not user["privacy_accepted"]:
+            await message.answer("Спершу запустіть /start.")
+            return
+        state = user.get("state")
+        state_data = _state_data(user)
+        if state == "exercise":
+            location = (
+                f"вбудований урок «{state_data.get('lesson_id', 'невідомий')}», "
+                f"вправа {state_data.get('exercise_index', 0) + 1}"
+            )
+        elif state == "open_practice":
+            location = (
+                f"{state_data.get('mode', 'практика')}, завдання "
+                f"{state_data.get('answered', 0) + 1}/{state_data.get('session_limit', '?')}"
+            )
+        elif state == "tense_practice":
+            lesson = next(
+                (item for item in tense_lessons if item["id"] == state_data.get("lesson_id")),
+                None,
+            )
+            location = (
+                f"курс часів · {lesson['title'] if lesson else 'урок'} · "
+                f"вправа {state_data.get('question_index', 0) + 1}"
+            )
+        elif state == "difficult_practice":
+            location = (
+                f"повторення складних слів · вправа "
+                f"{state_data.get('question_index', 0) + 1}/{len(state_data.get('tasks', []))}"
+            )
+        elif state in {"review", "review_result"}:
+            location = "повторення слів"
+        elif state == "reference_practice":
+            location = "вправа на слово"
+        elif state in {"placement", "placement_result"}:
+            location = "визначення рівня"
+        else:
+            location = "активного заняття немає"
+        text = f"Де я зараз: {location}.\n"
+        if state and state not in {"settings", "settings_days"}:
+            text += "Стан збережено. Продовжуйте через /continue або безпечно завершіть через /cancel."
+        else:
+            text += f"Останній розділ: {user.get('last_activity') or 'ще не обрано'}."
+        await message.answer(
+            text,
+            reply_markup=_inline([[("🏠 Головне меню", "nav:home")]]),
+        )
+
+    async def show_settings_menu(message: Message, telegram_id: int) -> None:
+        user = await _touch(db, telegram_id)
+        if not user or not user["privacy_accepted"]:
+            await message.answer("Спершу запустіть /start.")
+            return
+        await db.update_user(telegram_id, last_activity="Налаштування")
+        await message.answer(
+            "Налаштування навчання:",
+            reply_markup=_inline([
+                [("Час нагадування", "settings:time"), ("Часовий пояс", "settings:timezone")],
+                [("Дні нагадувань", "settings:days"), ("Увімкнути/вимкнути нагадування", "settings:toggle")],
+                [("Денний темп", "settings:pace"), ("Рівень", "settings:level")],
+                [("Напрямок і тест рівня", "settings:course")],
+                [("Повторити тест рівня", "settings:retest")],
+                [("📜 Історія складних слів", "words:history")],
+                [("Очистити журнал складних слів", "settings:clear_mistakes")],
+                [("🏠 Головне меню", "nav:home")],
+            ]),
+        )
+
+    def has_active_learning(user: dict[str, Any]) -> bool:
+        return user.get("state") in {
+            "exercise", "review", "review_result", "open_practice",
+            "tense_practice", "difficult_practice", "reference_practice",
+            "placement", "placement_result",
+        }
+
+    async def show_video(message: Message, telegram_id: int, video_id: str) -> None:
+        user = await _touch(db, telegram_id)
+        video = next((item for item in video_catalog if item["id"] == video_id), None)
+        if not user or not video or video["level"] != user.get("level"):
+            await message.answer(
+                "Відео або рівень застаріли. Відкрийте каталог відео знову.",
+                reply_markup=_inline([
+                    [("До відеоуроків", "nav:videos")],
+                    [("🏠 Головне меню", "nav:home")],
+                ]),
+            )
+            return
+        await message.answer(
+            f"{video['title']}\nКанал: {video['channel']}\n"
+            f"Рівень: {video['level']} · тема: {video['topic']}\n"
+            f"Мова пояснення: {video['language']} · перевірено: {video['checked_on']}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Відкрити на YouTube", url=video["url"])],
+                [InlineKeyboardButton(text="⬅️ До відеоуроків", callback_data="nav:videos")],
+                [InlineKeyboardButton(text="🏠 Головне меню", callback_data="nav:home")],
+            ]),
+        )
+
+    @router.message(F.text == "🏠 Головне меню")
+    async def home_button(message: Message) -> None:
+        await _show_home(message, db)
+
+    @router.message(F.text == "📚 Навчання")
+    async def learning_menu_button(message: Message) -> None:
+        await show_learning_menu(message, message.from_user.id)
+
+    @router.message(F.text == "✍️ Практика")
+    async def practice_menu_button(message: Message) -> None:
+        await show_practice_menu(message, message.from_user.id)
+
+    @router.message(F.text == "📘 Новий матеріал")
+    async def new_material_button(message: Message) -> None:
+        user = await _touch(db, message.from_user.id)
+        if user and user["privacy_accepted"]:
+            await db.update_user(message.from_user.id, last_activity="Новий матеріал")
+        await send_topics(message, message.from_user.id, new_only=True)
+
+    @router.message(F.text == "🔁 Повторити матеріал")
+    async def repeat_material_button(message: Message) -> None:
+        await show_repeat_menu(message, message.from_user.id)
+
+    @router.message(F.text == "🧠 Слова, які я плутаю")
+    async def difficult_words_button(message: Message) -> None:
+        await show_difficult_words(message, message.from_user.id)
+
+    @router.message(F.text == "🕒 Вивчати часи")
+    async def tenses_button(message: Message) -> None:
+        await show_tense_menu(message, message.from_user.id)
+
+    @router.message(F.text == "📝 Практика та завдання")
+    async def practice_button(message: Message) -> None:
+        await show_practice_menu(message, message.from_user.id)
+
+    @router.message(F.text == "🎥 Відеоуроки")
+    async def videos_button(message: Message) -> None:
+        await show_video_menu(message, message.from_user.id)
+
+    @router.callback_query(F.data.startswith("nav:"))
+    async def navigate_menu(callback: CallbackQuery) -> None:
+        if callback.message is None:
+            await callback.answer("Повідомлення недоступне.", show_alert=True)
+            return
+        action = callback.data.split(":", 1)[1]
+        await callback.answer()
+        message = callback.message
+        telegram_id = callback.from_user.id
+        if action == "home":
+            await _show_home(message, db)
+        elif action == "learning":
+            await show_learning_menu(message, telegram_id)
+        elif action == "where":
+            await show_where(message, telegram_id)
+        elif action == "new":
+            await db.update_user(telegram_id, last_activity="Новий матеріал")
+            await send_topics(message, telegram_id, new_only=True)
+        elif action == "repeat":
+            await show_repeat_menu(message, telegram_id)
+        elif action == "repeat_due":
+            user = await _touch(db, telegram_id)
+            course = await _get_course(db, user or {})
+            if not course:
+                await message.answer("Оберіть напрямок через /start.")
+            elif has_active_learning(user):
+                await message.answer("Спершу завершіть або скасуйте поточне заняття командою /cancel.")
+            else:
+                ids = await db.due_vocabulary(telegram_id, course["id"])
+                if ids:
+                    await _begin_review(message, db, settings, course, ids, telegram_id)
+                else:
+                    await message.answer(
+                        "Зараз немає слів, запланованих до повторення.",
+                        reply_markup=_inline([[("🏠 Головне меню", "nav:home")]]),
+                    )
+        elif action == "repeat_topics":
+            await send_topics(message, telegram_id, completed_only=True)
+        elif action == "difficult":
+            await show_difficult_words(message, telegram_id)
+        elif action == "tenses":
+            await show_tense_menu(message, telegram_id)
+        elif action == "practice":
+            await show_practice_menu(message, telegram_id)
+        elif action == "videos":
+            await show_video_menu(message, telegram_id)
+        elif action == "settings":
+            await show_settings_menu(message, telegram_id)
+        elif action == "progress":
+            await progress(message, telegram_id)
+        elif action == "continue_last":
+            user = await _touch(db, telegram_id)
+            last = (user or {}).get("last_activity")
+            if last == "Новий матеріал":
+                await send_topics(message, telegram_id, new_only=True)
+            elif last == "Повторення":
+                await show_repeat_menu(message, telegram_id)
+            elif last == "Складні слова":
+                await show_difficult_words(message, telegram_id)
+            elif last == "Часи англійської":
+                await show_tense_menu(message, telegram_id)
+            elif last == "Практика":
+                await show_practice_menu(message, telegram_id)
+            elif last == "Відеоуроки":
+                await show_video_menu(message, telegram_id)
+            else:
+                await show_settings_menu(message, telegram_id)
+        else:
+            await message.answer("Цей розділ недоступний. Повертаю до головного меню.")
+            await _show_home(message, db)
+
+    @router.callback_query(F.data.startswith("video:"))
+    async def video_topic_button(callback: CallbackQuery) -> None:
+        video_id = callback.data.split(":", 1)[1]
+        await callback.answer()
+        if callback.message:
+            await show_video(callback.message, callback.from_user.id, video_id)
+
+    @router.callback_query(F.data.startswith("practice:"))
+    async def practice_menu_action(callback: CallbackQuery) -> None:
+        user = await _touch(db, callback.from_user.id)
+        if not user or not user["privacy_accepted"] or callback.message is None:
+            await callback.answer("Спершу запустіть /start.", show_alert=True)
+            return
+        action = callback.data.split(":", 1)[1]
+        await callback.answer()
+        if action in {"5", "10", "20"}:
+            await start_open_block(
+                callback.message,
+                "practice",
+                level=user.get("level"),
+                count=int(action),
+            )
+        elif action == "exam":
+            level = user.get("level")
+            if level not in CEFR_LEVELS:
+                await callback.message.answer("Спершу оберіть рівень через /level.")
+                return
+            await start_open_block(
+                callback.message, "exam", level=level, count=10, timed=True
+            )
+        elif action == "reference":
+            level = user.get("level")
+            if level not in CEFR_LEVELS:
+                await callback.message.answer("Спершу оберіть рівень через /level.")
+                return
+            if has_active_learning(user):
+                await callback.message.answer("Спершу завершіть або скасуйте поточне заняття командою /cancel.")
+                return
+            candidate = reference.practice_word(level)
+            if not candidate:
+                await callback.message.answer(
+                    f"У наявних матеріалах немає вправи рівня {level}. "
+                    "Спробуйте відкрите завдання або інший рівень."
+                )
+                return
+            word, project_word = candidate
+            await db.set_state(callback.from_user.id, "reference_practice", {
+                "level": level,
+                "word": word["word"],
+                "translation": project_word["translation"],
+                "example": project_word.get("example", ""),
+                "example_translation": project_word.get("example_translation", ""),
+                "source": word["source"],
+                "source_url": word["source_url"],
+                "license": word["license"],
+                "citation": word["citation"],
+            })
+            await callback.message.answer(
+                f"Вправа рівня {level}: перекладіть українською слово “{word['word']}”. "
+                "Надішліть свою спробу; після неї покажу відповідь. Скасувати: /cancel."
+            )
+
+    @router.callback_query(F.data.startswith("words:"))
+    async def difficult_word_action(callback: CallbackQuery) -> None:
+        user = await _touch(db, callback.from_user.id)
+        if not user or not user["privacy_accepted"] or callback.message is None:
+            await callback.answer("Спершу запустіть /start.", show_alert=True)
+            return
+        action = callback.data.split(":", 1)[1]
+        await callback.answer()
+        if action == "start":
+            await start_difficult_practice(callback.message, callback.from_user.id)
+        elif action == "history":
+            history = await db.learning_mistakes(
+                callback.from_user.id, active_only=False, limit=20
+            )
+            if not history:
+                await callback.message.answer(
+                    "Історія складних слів порожня.",
+                    reply_markup=_inline([[("⚙️ Налаштування", "nav:settings"), ("🏠 Головне меню", "nav:home")]]),
+                )
+                return
+            lines = [
+                "Історія складних слів:",
+                *[
+                    f"• {entry['item']} — {entry['translation'] or 'переклад відсутній'}; "
+                    f"остання спроба: «{entry['attempted_answer']}»; "
+                    f"правильно: «{entry['correct_answer']}»; "
+                    f"помилок: {entry['mistake_count']}; "
+                    f"{'активне' if entry['active'] else 'засвоєне'}"
+                    for entry in history[:12]
+                ],
+            ]
+            await callback.message.answer(
+                "\n".join(lines),
+                reply_markup=_inline([
+                    [("Очистити журнал", "settings:clear_mistakes")],
+                    [("🏠 Головне меню", "nav:home")],
+                ]),
+            )
+
+    @router.callback_query(F.data.startswith("dw:"))
+    async def difficult_word_answer(callback: CallbackQuery) -> None:
+        user = await _touch(db, callback.from_user.id)
+        if not user or user["state"] != "difficult_practice" or callback.message is None:
+            await callback.answer("Ця відповідь застаріла.", show_alert=True)
+            return
+        if callback.data == "dw:finish":
+            await db.set_state(callback.from_user.id, None)
+            await callback.answer("Повторення завершено.")
+            await callback.message.answer(
+                "Повторення зупинено. Слова та результати залишилися у вашому журналі.",
+                reply_markup=MAIN_MENU,
+            )
+            return
+        parts = callback.data.split(":")
+        state = _state_data(user)
+        try:
+            action = parts[1]
+            index = int(parts[2])
+            if index != state.get("question_index"):
+                raise ValueError
+            if action == "answer":
+                option_index = int(parts[3])
+                task = state["tasks"][index]
+                if task["mode"] != "choice" or not 0 <= option_index < len(task["options"]):
+                    raise ValueError
+                answer = task["options"][option_index]
+            elif action == "skip":
+                answer = ""
+            else:
+                raise ValueError
+        except (ValueError, IndexError, KeyError, TypeError):
+            await callback.answer("Ця відповідь застаріла.", show_alert=True)
+            return
+        await callback.answer()
+        await submit_difficult_answer(
+            callback.message, callback.from_user.id, state, answer
+        )
+
+    @router.callback_query(F.data.startswith("tense:"))
+    async def tense_course_action(callback: CallbackQuery) -> None:
+        user = await _touch(db, callback.from_user.id)
+        if not user or not user["privacy_accepted"] or callback.message is None:
+            await callback.answer("Спершу запустіть /start.", show_alert=True)
+            return
+        parts = callback.data.split(":")
+        action = parts[1] if len(parts) > 1 else ""
+        if action == "lesson" and len(parts) == 3:
+            await callback.answer()
+            await show_tense_lesson(callback.message, callback.from_user.id, parts[2])
+            return
+        if action == "next":
+            await callback.answer()
+            level = user.get("level")
+            completed = {
+                item["lesson_id"] for item in await db.tense_progress(callback.from_user.id)
+                if item["completed_at"]
+            }
+            next_lesson = next(
+                (
+                    lesson for lesson in tense_lessons
+                    if level in lesson["levels"] and lesson["id"] not in completed
+                ),
+                None,
+            )
+            if not next_lesson:
+                await callback.message.answer(
+                    f"Усі доступні уроки часу рівня {level or 'невідомий'} уже пройдено.",
+                    reply_markup=_inline([[("🕒 До часів", "nav:tenses"), ("🏠 Головне меню", "nav:home")]]),
+                )
+            else:
+                await show_tense_lesson(
+                    callback.message, callback.from_user.id, next_lesson["id"]
+                )
+            return
+        if action == "compare_menu":
+            level = user.get("level")
+            pairs = [
+                ("present-simple", "present-continuous"),
+                ("past-simple", "past-continuous"),
+                ("past-simple", "present-perfect"),
+                ("present-perfect", "present-perfect-continuous"),
+            ]
+            lessons_by_id = {lesson["id"]: lesson for lesson in tense_lessons}
+            rows = [
+                [(
+                    f"{lessons_by_id[first]['title']} ↔ {lessons_by_id[second]['title']}",
+                    f"tense:compare:{first}:{second}",
+                )]
+                for first, second in pairs
+                if first in lessons_by_id
+                and second in lessons_by_id
+                and level in lessons_by_id[first]["levels"]
+                and level in lessons_by_id[second]["levels"]
+            ]
+            rows.append([("🏠 Головне меню", "nav:home")])
+            await callback.answer()
+            await callback.message.answer(
+                "Оберіть пару часів для порівняння:",
+                reply_markup=_inline(rows),
+            )
+            return
+        if action == "compare" and len(parts) == 4:
+            lessons_by_id = {lesson["id"]: lesson for lesson in tense_lessons}
+            first, second = lessons_by_id.get(parts[2]), lessons_by_id.get(parts[3])
+            level = user.get("level")
+            if (
+                not first or not second
+                or level not in first["levels"]
+                or level not in second["levels"]
+            ):
+                await callback.answer("Ця пара недоступна для вашого рівня.", show_alert=True)
+                return
+            await callback.answer()
+            await callback.message.answer(
+                f"Порівняння: {first['title']} ↔ {second['title']} · {level}\n\n"
+                f"{first['title']}: {first['comparison']}\n"
+                f"Приклад: {first['examples'][0]['en']} — {first['examples'][0]['uk']}\n\n"
+                f"{second['title']}: {second['comparison']}\n"
+                f"Приклад: {second['examples'][0]['en']} — {second['examples'][0]['uk']}",
+                reply_markup=_inline([
+                    [("🕒 До часів", "nav:tenses")],
+                    [("🏠 Головне меню", "nav:home")],
+                ]),
+            )
+            return
+        if action == "start" and len(parts) == 3:
+            lesson = next((item for item in tense_lessons if item["id"] == parts[2]), None)
+            if not lesson or user.get("level") not in lesson["levels"]:
+                await callback.answer("Цей урок недоступний для вашого рівня.", show_alert=True)
+                return
+            if user.get("state") in {
+                "exercise", "review", "review_result", "open_practice",
+                "tense_practice", "difficult_practice", "reference_practice",
+            }:
+                await callback.answer(
+                    "Спершу завершіть або скасуйте поточне заняття командою /cancel.",
+                    show_alert=True,
+                )
+                return
+            await db.update_user(callback.from_user.id, last_activity="Часи англійської")
+            state = {"lesson_id": lesson["id"], "question_index": 0, "total": 0, "correct": 0}
+            await callback.answer()
+            await show_tense_question(callback.message, callback.from_user.id, state)
+            return
+        if action in {"answer", "skip"}:
+            state = _state_data(user)
+            if user.get("state") != "tense_practice" or len(parts) < 4:
+                await callback.answer("Ця відповідь застаріла.", show_alert=True)
+                return
+            try:
+                lesson_id = parts[2]
+                index = int(parts[3])
+                if lesson_id != state.get("lesson_id") or index != state.get("question_index"):
+                    raise ValueError
+                lesson = next(item for item in tense_lessons if item["id"] == lesson_id)
+                exercise = lesson["exercises"][index]
+                if action == "answer":
+                    if len(parts) != 5:
+                        raise ValueError
+                    option_index = int(parts[4])
+                    if not 0 <= option_index < len(exercise["options"]):
+                        raise ValueError
+                    answer = exercise["options"][option_index]
+                else:
+                    answer = ""
+            except (ValueError, IndexError, KeyError, TypeError, StopIteration):
+                await callback.answer("Ця відповідь застаріла.", show_alert=True)
+                return
+            await callback.answer()
+            await submit_tense_answer(
+                callback.message, callback.from_user.id, state, answer
+            )
+            return
+        if action == "finish":
+            if user.get("state") != "tense_practice":
+                await callback.answer("Активного уроку часів немає.", show_alert=True)
+                return
+            await db.set_state(callback.from_user.id, None)
+            await callback.answer("Заняття завершено.")
+            await callback.message.answer(
+                "Урок зупинено без позначки про завершення. Ваші відповіді збережено.",
+                reply_markup=MAIN_MENU,
+            )
+            return
+        await callback.answer("Ця дія застаріла.", show_alert=True)
 
     @router.message(Command("topics"))
     async def show_topics(message: Message) -> None:
@@ -1330,7 +2418,11 @@ def register_handlers(
     async def show_topic(callback: CallbackQuery) -> None:
         user = await _touch(db, callback.from_user.id)
         course = await _get_course(db, user or {})
-        lesson_id = callback.data.split(":", 1)[1]
+        parts = callback.data.split(":")
+        selection = parts[1] if len(parts) == 3 else ""
+        completed_only = selection == "done"
+        new_only = selection == "new"
+        lesson_id = parts[-1]
         if not user or not course or user.get("level") not in CEFR_LEVELS:
             await callback.answer("Спершу оберіть курс і рівень.", show_alert=True)
             return
@@ -1341,23 +2433,28 @@ def register_handlers(
         title = re.split(
             r"\s+[—–-]\s+частина\b", anchor["title"], maxsplit=1, flags=re.IGNORECASE
         )[0]
+        completed = await db.completed_lessons(callback.from_user.id, course["id"])
         lessons = [
             lesson
             for lesson in course["lessons"]
             if lesson["level"] == user["level"]
+            and (not completed_only or lesson["id"] in completed)
+            and (not new_only or lesson["id"] not in completed)
             and re.split(
                 r"\s+[—–-]\s+частина\b", lesson["title"], maxsplit=1, flags=re.IGNORECASE
             )[0] == title
         ]
-        completed = await db.completed_lessons(callback.from_user.id, course["id"])
         rows = [
             [(
                 f"{'✅ ' if lesson['id'] in completed else ''}Урок {lesson['order']}: {lesson['title']}",
-                f"lesson:{lesson['id']}",
+                f"lesson:{'done:' if completed_only else 'new:' if new_only else ''}{lesson['id']}",
             )]
             for lesson in lessons
         ]
-        rows.append([("До каталогу тем", "topics:back")])
+        rows.extend([
+            [("До каталогу тем", f"topics:back:{'done' if completed_only else 'new' if new_only else 'all'}")],
+            [("🏠 Головне меню", "nav:home")],
+        ])
         await callback.answer()
         if callback.message:
             await callback.message.answer(
@@ -1372,11 +2469,27 @@ def register_handlers(
         if callback.message:
             await send_topics(callback.message, callback.from_user.id)
 
+    @router.callback_query(F.data.startswith("topics:back:"))
+    async def back_to_topic_list(callback: CallbackQuery) -> None:
+        mode = callback.data.rsplit(":", 1)[-1]
+        await callback.answer()
+        if callback.message:
+            await send_topics(
+                callback.message,
+                callback.from_user.id,
+                completed_only=mode == "done",
+                new_only=mode == "new",
+            )
+
     @router.callback_query(F.data.startswith("lesson:"))
     async def start_catalog_lesson(callback: CallbackQuery) -> None:
         user = await _touch(db, callback.from_user.id)
         course = await _get_course(db, user or {})
-        lesson_id = callback.data.split(":", 1)[1]
+        parts = callback.data.split(":")
+        selection = parts[1] if len(parts) == 3 else ""
+        completed_only = selection == "done"
+        new_only = selection == "new"
+        lesson_id = parts[-1]
         lesson = next(
             (item for item in course["lessons"] if item["id"] == lesson_id), None
         ) if course else None
@@ -1388,11 +2501,34 @@ def register_handlers(
         ):
             await callback.answer("Урок недоступний для вибраного рівня.", show_alert=True)
             return
+        if completed_only and lesson_id not in await db.completed_lessons(
+            callback.from_user.id, course["id"]
+        ):
+            await callback.answer("Цей урок ще не завершено.", show_alert=True)
+            return
+        if new_only and lesson_id in await db.completed_lessons(
+            callback.from_user.id, course["id"]
+        ):
+            await callback.answer("Цей урок уже завершено. Знайдете його в розділі повторення.", show_alert=True)
+            return
+        if user.get("state") in {
+            "exercise", "review", "review_result", "open_practice",
+            "tense_practice", "difficult_practice", "reference_practice",
+        }:
+            await callback.answer(
+                "Спершу завершіть або скасуйте поточне заняття командою /cancel.",
+                show_alert=True,
+            )
+            return
         if user["paused"]:
             await callback.answer("Навчання призупинено. Спершу надішліть /resume.", show_alert=True)
             return
         await callback.answer()
         if callback.message:
+            await db.update_user(
+                callback.from_user.id,
+                last_activity="Повторення" if completed_only else "Новий матеріал",
+            )
             await _send_lesson(callback.message, db, course, lesson, callback.from_user.id)
 
     async def start_open_block(
@@ -1401,6 +2537,12 @@ def register_handlers(
         user = await _touch(db, message.from_user.id)
         if not user or not user["privacy_accepted"]:
             await message.answer("Спершу запустіть /start і підтвердьте повідомлення про приватність.")
+            return
+        if has_active_learning(user):
+            await message.answer(
+                "У вас уже є активне заняття. Продовжуйте його через /continue "
+                "або завершіть командою /cancel."
+            )
             return
         if user["paused"]:
             await message.answer("Навчання призупинено. Щоб продовжити, надішліть /resume.")
@@ -1509,6 +2651,7 @@ def register_handlers(
             state["answers"] = []
             state["exam_tasks"] = exam_tasks
         await db.set_state(message.from_user.id, "open_practice", state)
+        await db.update_user(message.from_user.id, last_activity="Практика")
         if timed:
             intro = (
                 f"Починається тренувальний іспитовий блок: {count} завдань, 20 хвилин. "
@@ -1592,6 +2735,9 @@ def register_handlers(
         if user.get("state") == "open_practice":
             await message.answer("Спершу завершіть або скасуйте поточний прохід командою /cancel.")
             return
+        if has_active_learning(user):
+            await message.answer("Спершу завершіть або скасуйте поточне заняття командою /cancel.")
+            return
         task_ids = [item["task_id"] for item in mistakes]
         state = {
             "mode": "mistakes",
@@ -1647,8 +2793,7 @@ def register_handlers(
                     lines.append(f"Приклад: {example_text}")
             lines.append(
                 "Український переклад у джерелі відсутній. "
-                f"Джерело: {entry['source_id']} · Open English WordNet Team, "
-                "https://github.com/globalwordnet/english-wordnet. "
+                f"Джерело: {entry['source_id']} · Open English WordNet Team. "
                 "CC BY 4.0; також діють умови Princeton WordNet."
             )
             await message.answer("\n".join(lines))
@@ -1730,7 +2875,11 @@ def register_handlers(
             "/topics — теми й уроки; /vocab слово — словник; /saveword слово, /wordlist, /remove_word номер — особистий список; "
             "/open_practice [A1–C2|unknown] [short|standard|long] — різнорівнева практика; "
             "/exam [5|10|20] — тренувальний іспит; /mistakes — повторити помилки; "
-            "/continue — відкрити урок; /cancel — скасувати поточний крок; "
+            "/continue — продовжити заняття; /where — поточний стан; "
+            "/cancel або /finish — безпечно завершити поточне заняття; "
+            "у головному меню також є нові й пройдені уроки, складні слова, курс часів, "
+            "практика, відеоуроки та особистий прогрес; "
+            "/topics — каталог тем; /settings — налаштування; "
             "/progress — прогрес; "
             "/profile і /plan — ваші налаштування; /settings — змінити розклад; "
             "/pause та /resume — призупинити або відновити нагадування; /support — написати підтримці; "
@@ -1879,7 +3028,7 @@ def register_handlers(
         if example:
             lines.append(f"Приклад CEFR-SP: {example['text']}")
             lines.append(
-                f"Джерело прикладу: {example['source_url']} · {example['license']}. "
+                f"Джерело прикладу: CEFR-SP · {example['license']}. "
                 f"Цитування: {example['citation']}"
             )
         elif project_word and project_word.get("example"):
@@ -1894,7 +3043,7 @@ def register_handlers(
             )
         lines.extend(
             [
-                f"Джерело: {word['source_url']} · {word['license']}.",
+                f"Джерело: {word['source']} · {word['license']}.",
                 f"Цитування: {word['citation']}",
             ]
         )
@@ -1922,7 +3071,7 @@ def register_handlers(
                 f"Приклад CEFR-SP того самого рівня (профіль не пов'язує його з темою): {example['text']}"
             )
             lines.append(
-                f"Ліцензія прикладу: {example['license']}; {example['source_url']}. "
+                f"Джерело прикладу: CEFR-SP · ліцензія {example['license']}. "
                 f"Цитування: {example['citation']}"
             )
         elif not reference.sentences_enabled:
@@ -1936,7 +3085,7 @@ def register_handlers(
             )
         lines.extend(
             [
-                f"Джерело теми: {topic['source_url']} · {topic['license']}.",
+                f"Джерело теми: CEFR-J · {topic['license']}.",
                 f"Цитування: {topic['citation']}",
             ]
         )
@@ -1947,7 +3096,10 @@ def register_handlers(
         selected = await reference_user(message)
         if not selected:
             return
-        _, level = selected
+        selected_user, level = selected
+        if has_active_learning(selected_user):
+            await message.answer("Спершу завершіть або скасуйте поточне заняття командою /cancel.")
+            return
         candidate = reference.practice_word(level)
         if not candidate:
             await message.answer(
@@ -1975,15 +3127,25 @@ def register_handlers(
         )
 
     @router.message(Command("cancel"))
+    @router.message(Command("finish"))
     async def cancel_flow(message: Message) -> None:
         user = await _touch(db, message.from_user.id)
         if not user:
             await message.answer("Немає активного профілю. Надішліть /start.")
             return
         await db.set_state(message.from_user.id, None)
-        await message.answer("Поточний крок скасовано. Ваш курс і збережений прогрес не змінено.", reply_markup=MAIN_MENU)
+        await message.answer(
+            "Поточне заняття завершено без позначки про проходження. "
+            "Збережений прогрес і попередні результати не видалено.",
+            reply_markup=MAIN_MENU,
+        )
+
+    @router.message(Command("where"))
+    async def where_command(message: Message) -> None:
+        await show_where(message, message.from_user.id)
 
     @router.message(Command("profile"))
+    @router.message(F.text == "👤 Профіль")
     async def profile(message: Message) -> None:
         user = await _touch(db, message.from_user.id)
         if not user or not user["privacy_accepted"]:
@@ -1991,7 +3153,10 @@ def register_handlers(
             return
         course = await _get_course(db, user)
         level = user.get("level")
+        name = message.from_user.full_name or "Учень"
+        streak = await db.current_study_streak(message.from_user.id)
         await message.answer(
+            f"👤 Профіль · {name}\n\n"
             f"Напрямок: {course['title'] if course else 'ще не обрано'}\n"
             f"Рівень: {level or 'ще не визначено'}"
             f"{' — ' + CEFR_DESCRIPTIONS[level] if level in CEFR_DESCRIPTIONS else ''}\n"
@@ -1999,26 +3164,46 @@ def register_handlers(
             f"Нагадування: {'увімкнено' if user['reminders_enabled'] else 'вимкнено'}\n"
             f"Час: {user['reminder_time']} · {user['timezone']}\n"
             f"Дні: {_format_days(json.loads(user['reminder_days_json']))}\n"
+            f"Серія навчання: {streak} дн.\n"
             f"Стан: {'пауза' if user['paused'] else 'активний'}",
-            reply_markup=MAIN_MENU,
+            reply_markup=_inline([
+                [("⚙️ Налаштування", "nav:settings"), ("📊 Прогрес", "nav:progress")],
+                [("🏠 Головне меню", "nav:home")],
+            ]),
         )
 
     @router.message(Command("progress"))
     @router.message(F.text == "Мій прогрес")
-    async def progress(message: Message) -> None:
-        user = await _touch(db, message.from_user.id)
+    @router.message(F.text == "📊 Прогрес")
+    @router.message(F.text == "📊 Мій прогрес")
+    async def progress(message: Message, telegram_id: int | None = None) -> None:
+        telegram_id = telegram_id or message.from_user.id
+        user = await _touch(db, telegram_id)
         course = await _get_course(db, user or {})
         if not user or not course:
             await message.answer("Оберіть напрямок через /start.")
             return
-        stats = await db.progress_summary(message.from_user.id, course["id"])
-        open_stats = await db.open_practice_summary(message.from_user.id)
-        streak = await db.current_study_streak(message.from_user.id)
+        stats = await db.progress_summary(telegram_id, course["id"])
+        open_stats = await db.open_practice_summary(telegram_id)
+        streak = await db.current_study_streak(telegram_id)
         level = user.get("level")
+        available_tense_ids = {
+            item["id"] for item in tense_lessons if level in item["levels"]
+        } if level in CEFR_LEVELS else set()
+        tense_stats = await db.tense_progress(telegram_id)
+        completed_tenses = sum(
+            item["lesson_id"] in available_tense_ids and bool(item["completed_at"])
+            for item in tense_stats
+        )
+        difficult_count = len(
+            await db.learning_mistakes(
+                telegram_id, active_only=True, limit=50
+            )
+        )
         level_lessons = [
             item for item in course["lessons"] if item["level"] == level
         ]
-        completed = await db.completed_lessons(message.from_user.id, course["id"])
+        completed = await db.completed_lessons(telegram_id, course["id"])
         completed_at_level = sum(item["id"] in completed for item in level_lessons)
         total_lessons = len(level_lessons)
         next_lesson_available = completed_at_level < total_lessons
@@ -2056,6 +3241,8 @@ def register_handlers(
             f"підказок використано: {open_stats['hints']}\n"
             f"{topic_summary}\n"
             f"Слів до повторення: {stats['words_due']}\n"
+            f"Уроків часів завершено: {completed_tenses}/{len(available_tense_ids)}\n"
+            f"Активних складних слів: {difficult_count}\n"
             f"Серія навчання: {streak} дн.\n"
             f"Наступний крок: {next_step}.\n"
             "Рівень і відсотки є орієнтовними навчальними показниками.",
@@ -2082,22 +3269,26 @@ def register_handlers(
 
     @router.message(Command("settings"))
     @router.message(F.text == "Налаштування")
+    @router.message(F.text == "⚙️ Налаштування")
     async def settings_command(message: Message) -> None:
-        user = await _touch(db, message.from_user.id)
+        await show_settings_menu(message, message.from_user.id)
+
+    @router.callback_query(F.data == "settings:clear_mistakes")
+    async def clear_difficult_word_history(callback: CallbackQuery) -> None:
+        user = await _touch(db, callback.from_user.id)
         if not user or not user["privacy_accepted"]:
-            await message.answer("Спершу запустіть /start.")
+            await callback.answer("Запустіть /start.", show_alert=True)
             return
-        await db.set_state(message.from_user.id, "settings")
-        await message.answer(
-            "Оберіть, що змінити:",
-            reply_markup=_inline([
-                [("Час нагадування", "settings:time"), ("Часовий пояс", "settings:timezone")],
-                [("Дні нагадувань", "settings:days"), ("Увімкнути/вимкнути нагадування", "settings:toggle")],
-                [("Денний темп", "settings:pace"), ("Рівень", "settings:level")],
-                [("Напрямок і тест рівня", "settings:course")],
-                [("Повторити тест рівня", "settings:retest")],
-            ]),
-        )
+        count = await db.clear_learning_mistakes(callback.from_user.id)
+        await callback.answer("Журнал очищено.")
+        if callback.message:
+            await callback.message.answer(
+                f"Видалено записів зі списку складних слів: {count}.",
+                reply_markup=_inline([
+                    [("⚙️ До налаштувань", "nav:settings")],
+                    [("🏠 Головне меню", "nav:home")],
+                ]),
+            )
 
     @router.callback_query(F.data == "settings:toggle")
     async def toggle_reminders(callback: CallbackQuery) -> None:
@@ -2107,7 +3298,6 @@ def register_handlers(
             return
         enabled = not bool(user["reminders_enabled"])
         await db.update_user(callback.from_user.id, reminders_enabled=enabled)
-        await db.set_state(callback.from_user.id, None)
         await callback.answer("Нагадування увімкнено." if enabled else "Нагадування вимкнено.")
         if callback.message:
             await callback.message.answer(
@@ -2117,8 +3307,12 @@ def register_handlers(
 
     @router.callback_query(F.data == "settings:time")
     async def change_time(callback: CallbackQuery) -> None:
-        if not await _touch(db, callback.from_user.id):
+        user = await _touch(db, callback.from_user.id)
+        if not user:
             await callback.answer("Запустіть /start.", show_alert=True)
+            return
+        if has_active_learning(user):
+            await callback.answer("Спершу завершіть або скасуйте заняття командою /cancel.", show_alert=True)
             return
         await db.set_state(callback.from_user.id, "settings_time")
         await callback.answer()
@@ -2127,8 +3321,12 @@ def register_handlers(
 
     @router.callback_query(F.data == "settings:timezone")
     async def change_timezone(callback: CallbackQuery) -> None:
-        if not await _touch(db, callback.from_user.id):
+        user = await _touch(db, callback.from_user.id)
+        if not user:
             await callback.answer("Запустіть /start.", show_alert=True)
+            return
+        if has_active_learning(user):
+            await callback.answer("Спершу завершіть або скасуйте заняття командою /cancel.", show_alert=True)
             return
         await db.set_state(callback.from_user.id, "settings_timezone")
         await callback.answer()
@@ -2137,8 +3335,12 @@ def register_handlers(
 
     @router.callback_query(F.data == "settings:days")
     async def change_days(callback: CallbackQuery) -> None:
-        if not await _touch(db, callback.from_user.id):
+        user = await _touch(db, callback.from_user.id)
+        if not user:
             await callback.answer("Запустіть /start.", show_alert=True)
+            return
+        if has_active_learning(user):
+            await callback.answer("Спершу завершіть або скасуйте заняття командою /cancel.", show_alert=True)
             return
         await db.set_state(callback.from_user.id, "settings_days")
         await callback.answer()
@@ -2153,8 +3355,12 @@ def register_handlers(
 
     @router.callback_query(F.data == "settings:pace")
     async def change_pace(callback: CallbackQuery) -> None:
-        if not await _touch(db, callback.from_user.id):
+        user = await _touch(db, callback.from_user.id)
+        if not user:
             await callback.answer("Запустіть /start.", show_alert=True)
+            return
+        if has_active_learning(user):
+            await callback.answer("Спершу завершіть або скасуйте заняття командою /cancel.", show_alert=True)
             return
         await db.set_state(callback.from_user.id, "settings")
         await callback.answer()
@@ -2170,6 +3376,9 @@ def register_handlers(
         if not user:
             await callback.answer("Запустіть /start.", show_alert=True)
             return
+        if has_active_learning(user):
+            await callback.answer("Спершу завершіть або скасуйте заняття командою /cancel.", show_alert=True)
+            return
         await db.set_state(callback.from_user.id, "manual_level", {"source": "settings"})
         await callback.answer()
         if callback.message:
@@ -2180,8 +3389,12 @@ def register_handlers(
 
     @router.callback_query(F.data == "settings:course")
     async def change_course(callback: CallbackQuery) -> None:
-        if not await _touch(db, callback.from_user.id):
+        user = await _touch(db, callback.from_user.id)
+        if not user:
             await callback.answer("Запустіть /start.", show_alert=True)
+            return
+        if has_active_learning(user):
+            await callback.answer("Спершу завершіть або скасуйте заняття командою /cancel.", show_alert=True)
             return
         await db.set_state(callback.from_user.id, None)
         await callback.answer()
@@ -2194,6 +3407,9 @@ def register_handlers(
         course = await _get_course(db, user or {})
         if not user or not course:
             await callback.answer("Спершу оберіть доступний курс через /start.", show_alert=True)
+            return
+        if has_active_learning(user):
+            await callback.answer("Спершу завершіть або скасуйте заняття командою /cancel.", show_alert=True)
             return
         placement_data: dict[str, Any] = {
             "course_id": course["id"],
@@ -2220,7 +3436,80 @@ def register_handlers(
     @router.message(Command("continue"))
     @router.message(F.text == "Продовжити урок")
     async def continue_lesson(message: Message) -> None:
-        await _touch(db, message.from_user.id)
+        user = await _touch(db, message.from_user.id)
+        if user and user["paused"]:
+            await message.answer("Навчання призупинено. Спершу надішліть /resume.")
+            return
+        if user and user["state"] in {"placement", "placement_result"}:
+            data = _state_data(user)
+            course = await db.get_published_course(data.get("course_id", ""))
+            if not course:
+                await db.set_state(message.from_user.id, None)
+                await message.answer(
+                    "Курс тесту більше недоступний. Стан очищено; відкрийте /start, щоб обрати курс."
+                )
+                return
+            if user["state"] == "placement":
+                index = data.get("index")
+                if not isinstance(index, int) or not 0 <= index < len(course["placement_test"]):
+                    await db.set_state(message.from_user.id, None)
+                    await message.answer(
+                        "Стан тесту некоректний, тому його безпечно зупинено. Запустіть /start, щоб почати знову."
+                    )
+                    return
+                question = course["placement_test"][index]
+                order = data.get("display_order")
+                if (
+                    not isinstance(order, list)
+                    or any(type(option) is not int for option in order)
+                    or sorted(order) != list(range(len(question["options"])))
+                ):
+                    order, correct_position = _shuffled_option_order(
+                        question["options"],
+                        question["correct_index"],
+                        data.get("correct_position"),
+                    )
+                    data.update(display_order=order, correct_position=correct_position)
+                    await db.set_state(message.from_user.id, "placement", data)
+                await _show_placement_question(message, course, index, order)
+                return
+            suggested = data.get("suggested")
+            if suggested not in CEFR_LEVELS:
+                await db.set_state(message.from_user.id, None)
+                await message.answer(
+                    "Результат тесту некоректний, тому стан очищено. Запустіть /start, щоб пройти тест знову."
+                )
+                return
+            score = user.get("placement_score")
+            score_text = f" ({score}/{len(course['placement_test'])})" if isinstance(score, int) else ""
+            await message.answer(
+                f"Орієнтовний рівень: {suggested}{score_text}. Це не сертифікація.",
+                reply_markup=_inline([
+                    [(f"Почати з {suggested}", "placement:accept")],
+                    [("Змінити рівень вручну", "placement:manual")],
+                ]),
+            )
+            return
+        if user and user["state"] == "tense_practice":
+            await show_tense_question(
+                message, message.from_user.id, _state_data(user)
+            )
+            return
+        if user and user["state"] == "difficult_practice":
+            await show_difficult_question(
+                message, message.from_user.id, _state_data(user)
+            )
+            return
+        if user and user["state"] == "open_practice":
+            await show_open_task(message, message.from_user.id, _state_data(user))
+            return
+        if user and user["state"] == "reference_practice":
+            data = _state_data(user)
+            await message.answer(
+                f"Продовжуємо: перекладіть українською слово “{data.get('word', '')}”. "
+                "Надішліть відповідь або скористайтеся /cancel."
+            )
+            return
         await _begin_lesson(message, db, settings, message.from_user.id)
 
     @router.message(F.text == "Повторити слова")
@@ -2229,6 +3518,9 @@ def register_handlers(
         course = await _get_course(db, user or {})
         if not user or not course:
             await message.answer("Оберіть курс через /start.")
+            return
+        if has_active_learning(user):
+            await message.answer("Спершу завершіть або скасуйте поточне заняття командою /cancel.")
             return
         ids = await db.due_vocabulary(message.from_user.id, course["id"])
         if not ids:
@@ -2260,6 +3552,12 @@ def register_handlers(
         choice = exercise["options"][option_index]
         correct = choice == exercise["correct_answer"]
         attempts = data["attempts"] + 1
+        if correct:
+            await db.record_learning_correct(callback.from_user.id, choice)
+        else:
+            await record_course_mistake(
+                callback.from_user.id, course, lesson, exercise, choice
+            )
         await db.record_exercise_attempt(
             callback.from_user.id, course["id"], lesson["id"], exercise["id"], correct
         )
@@ -2300,6 +3598,9 @@ def register_handlers(
         except (ValueError, IndexError, KeyError, TypeError, StopIteration):
             await callback.answer("Ця вправа застаріла.", show_alert=True)
             return
+        await record_course_mistake(
+            callback.from_user.id, course, lesson, exercise, ""
+        )
         await db.record_exercise_attempt(
             callback.from_user.id, course["id"], lesson["id"], exercise["id"], False
         )
@@ -2332,6 +3633,29 @@ def register_handlers(
             await callback.answer("Ця відповідь застаріла.", show_alert=True)
             return
         await db.record_vocabulary_answer(callback.from_user.id, course["id"], word_id, correct)
+        if correct:
+            await db.record_learning_correct(callback.from_user.id, word["word"])
+        else:
+            await db.record_learning_mistake(
+                callback.from_user.id,
+                item=word["word"],
+                attempted_answer=data["review_options"][choice],
+                correct_answer=word["word"],
+                accepted_answers=[word["word"]],
+                translation=word["translation"],
+                example=word["example"],
+                topic=next(
+                    lesson["title"]
+                    for lesson in course["lessons"]
+                    if any(item["id"] == word_id for item in lesson["vocabulary"])
+                ),
+                level=next(
+                    lesson["level"]
+                    for lesson in course["lessons"]
+                    if any(item["id"] == word_id for item in lesson["vocabulary"])
+                ),
+                explanation="Повторіть переклад слова та приклад з уроку.",
+            )
         data["correct"] += int(correct)
         if not correct:
             data.setdefault("review_wrong_ids", []).append(word_id)
@@ -2439,19 +3763,50 @@ def register_handlers(
                 return
             await submit_open_answer(message, message.from_user.id, data, answer)
             return
+        if user["state"] == "tense_practice":
+            data = _state_data(user)
+            answer = message.text.strip()
+            if not answer:
+                await message.answer("Введіть відповідь або скористайтеся кнопкою.")
+                return
+            await submit_tense_answer(message, message.from_user.id, data, answer)
+            return
+        if user["state"] == "difficult_practice":
+            data = _state_data(user)
+            answer = message.text.strip()
+            if not answer:
+                await message.answer("Введіть відповідь або скористайтеся кнопкою.")
+                return
+            await submit_difficult_answer(message, message.from_user.id, data, answer)
+            return
         if user["state"] == "reference_practice":
             data = _state_data(user)
-            attempted = re.sub(r"\s+", " ", message.text).strip().casefold()
-            expected = re.sub(r"\s+", " ", data.get("translation", "")).strip().casefold()
+            attempted = _normalize_exercise_answer(message.text)
+            expected = _normalize_exercise_answer(data.get("translation", ""))
             await db.set_state(message.from_user.id, None)
             outcome = "Правильно!" if attempted == expected else "Не зовсім."
+            if attempted == expected:
+                await db.record_learning_correct(message.from_user.id, data["word"])
+            else:
+                await db.record_learning_mistake(
+                    message.from_user.id,
+                    item=data["word"],
+                    attempted_answer=message.text.strip(),
+                    correct_answer=data["word"],
+                    accepted_answers=[data["word"]],
+                    translation=data["translation"],
+                    example=data.get("example", ""),
+                    topic="Лексична практика",
+                    level=data["level"],
+                    explanation="Повторіть значення слова та його приклад.",
+                )
             answer = f"{outcome}\nВідповідь: {data.get('translation', 'не доступна')}."
             if data.get("example"):
                 answer += f"\nПриклад: {data['example']}"
             if data.get("example_translation"):
                 answer += f"\nПереклад прикладу: {data['example_translation']}"
             answer += (
-                f"\nДжерело слова: {data['source']} · {data['source_url']} · {data['license']}."
+                f"\nДжерело слова: {data['source']} · {data['license']}."
                 f"\nЦитування: {data['citation']}"
                 "\nПереклад і приклад — із матеріалу бота."
             )
@@ -2481,6 +3836,14 @@ def register_handlers(
                 return
             correct = attempted == _normalize_exercise_answer(exercise["correct_answer"])
             attempts = data.get("attempts", 0) + 1
+            if correct:
+                await db.record_learning_correct(
+                    message.from_user.id, exercise["correct_answer"]
+                )
+            else:
+                await record_course_mistake(
+                    message.from_user.id, course, lesson, exercise, message.text.strip()
+                )
             await db.record_exercise_attempt(
                 message.from_user.id, course["id"], lesson["id"], exercise["id"], correct
             )
@@ -2544,9 +3907,10 @@ def register_handlers(
             await db.update_user(message.from_user.id, timezone=timezone, reminders_enabled=1)
             await db.set_state(message.from_user.id, None)
             if onboarding:
-                await message.answer(f"Розклад збережено: {user['reminder_time']} · {timezone}. Відкриваю перший урок.")
-                await _begin_lesson(
-                    message, db, settings, message.from_user.id, skip_review=True
+                await message.answer(
+                    f"Розклад збережено: {user['reminder_time']} · {timezone}.\n"
+                    "Налаштування завершено. Коли будете готові, відкрийте «📚 Навчання».",
+                    reply_markup=MAIN_MENU,
                 )
             else:
                 await message.answer("Часовий пояс оновлено.", reply_markup=MAIN_MENU)
@@ -2757,32 +4121,38 @@ async def reminder_worker(bot: Bot, db: Database, settings: Settings) -> None:
 
 
 async def configure_commands(bot: Bot) -> None:
+    commands = [
+        BotCommand(command="start", description="Почати навчання"),
+        BotCommand(command="help", description="Довідка"),
+        BotCommand(command="level", description="Вибрати рівень A1–C2"),
+        BotCommand(command="word", description="Слово вашого рівня"),
+        BotCommand(command="grammar", description="Граматична тема вашого рівня"),
+        BotCommand(command="practice", description="Вправа вашого рівня"),
+        BotCommand(command="topics", description="Каталог тем і уроків"),
+        BotCommand(command="vocab", description="Словник вашого рівня"),
+        BotCommand(command="saveword", description="Додати слово до списку"),
+        BotCommand(command="wordlist", description="Особистий список слів"),
+        BotCommand(command="remove_word", description="Видалити слово зі списку"),
+        BotCommand(command="open_practice", description="Відкрита практика"),
+        BotCommand(command="exam", description="Тренувальний іспит"),
+        BotCommand(command="mistakes", description="Повторити помилки"),
+        BotCommand(command="cancel", description="Скасувати поточний крок"),
+        BotCommand(command="finish", description="Завершити заняття без втрати прогресу"),
+        BotCommand(command="continue", description="Продовжити урок"),
+        BotCommand(command="where", description="Показати поточний крок"),
+        BotCommand(command="progress", description="Мій прогрес"),
+        BotCommand(command="profile", description="Мій профіль"),
+        BotCommand(command="plan", description="Мій план"),
+        BotCommand(command="settings", description="Налаштування"),
+        BotCommand(command="pause", description="Призупинити навчання"),
+        BotCommand(command="resume", description="Відновити навчання"),
+        BotCommand(command="support", description="Написати підтримці"),
+        BotCommand(command="privacy", description="Повідомлення про приватність"),
+        BotCommand(command="delete_me", description="Видалити профіль і прогрес"),
+    ]
+    await bot.delete_my_commands()
+    await bot.delete_my_commands(scope=BotCommandScopeAllGroupChats())
     await bot.set_my_commands(
-        [
-            BotCommand(command="start", description="Почати навчання"),
-            BotCommand(command="help", description="Довідка"),
-            BotCommand(command="level", description="Вибрати рівень A1–C2"),
-            BotCommand(command="word", description="Слово вашого рівня"),
-            BotCommand(command="grammar", description="Граматична тема вашого рівня"),
-            BotCommand(command="practice", description="Вправа вашого рівня"),
-            BotCommand(command="topics", description="Каталог тем і уроків"),
-            BotCommand(command="vocab", description="Словник вашого рівня"),
-            BotCommand(command="saveword", description="Додати слово до списку"),
-            BotCommand(command="wordlist", description="Особистий список слів"),
-            BotCommand(command="remove_word", description="Видалити слово зі списку"),
-            BotCommand(command="open_practice", description="Відкрита практика"),
-            BotCommand(command="exam", description="Тренувальний іспит"),
-            BotCommand(command="mistakes", description="Повторити помилки"),
-            BotCommand(command="cancel", description="Скасувати поточний крок"),
-            BotCommand(command="continue", description="Продовжити урок"),
-            BotCommand(command="progress", description="Мій прогрес"),
-            BotCommand(command="profile", description="Мій профіль"),
-            BotCommand(command="plan", description="Мій план"),
-            BotCommand(command="settings", description="Налаштування"),
-            BotCommand(command="pause", description="Призупинити навчання"),
-            BotCommand(command="resume", description="Відновити навчання"),
-            BotCommand(command="support", description="Написати підтримці"),
-            BotCommand(command="privacy", description="Повідомлення про приватність"),
-            BotCommand(command="delete_me", description="Видалити профіль і прогрес"),
-        ]
+        commands,
+        scope=BotCommandScopeAllPrivateChats(),
     )
